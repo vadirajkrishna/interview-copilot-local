@@ -20,6 +20,11 @@ TOPIC_PATTERN_MODEL = os.environ.get("INTERVIEW_COACH_TOPIC_PATTERN_MODEL", "bui
 TOPIC_PATTERN_MODEL = os.environ.get("INTERVIEW_COACH_TOPIC_PATTERN_MODEL", "vadirajkrishna/interview-coach-3b")
 >>>>>>> c0f39ad (initial commit - InterviewCopilotLocal)
 TOPIC_PATTERN_BASE_MODEL = os.environ.get("INTERVIEW_COACH_TOPIC_PATTERN_BASE_MODEL", GENERAL_LLM_MODEL)
+HF_LOCAL_FILES_ONLY = os.environ.get("INTERVIEW_COACH_HF_LOCAL_FILES_ONLY", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 USE_TOPIC_PATTERN_MODEL = os.environ.get("INTERVIEW_COACH_USE_TOPIC_PATTERN_MODEL", "1").strip().lower() not in {
     "0",
     "false",

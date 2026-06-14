@@ -5,7 +5,7 @@ from typing import Any
 
 import yaml
 
-from config import TOPIC_PATTERN_BASE_MODEL, TOPIC_PATTERN_MODEL, USE_TOPIC_PATTERN_MODEL
+from config import HF_LOCAL_FILES_ONLY, TOPIC_PATTERN_BASE_MODEL, TOPIC_PATTERN_MODEL, USE_TOPIC_PATTERN_MODEL
 
 
 class TopicPatternAgent:
@@ -99,8 +99,12 @@ class TopicPatternAgent:
             from huggingface_hub import snapshot_download
             from transformers import AutoModelForCausalLM, AutoTokenizer
 
-            adapter_path = snapshot_download(self.model_name, local_files_only=True)
-            tokenizer = AutoTokenizer.from_pretrained(self.base_model_name, trust_remote_code=False)
+            adapter_path = snapshot_download(self.model_name, local_files_only=HF_LOCAL_FILES_ONLY)
+            tokenizer = AutoTokenizer.from_pretrained(
+                self.base_model_name,
+                trust_remote_code=False,
+                local_files_only=HF_LOCAL_FILES_ONLY,
+            )
             if tokenizer.pad_token_id is None:
                 tokenizer.pad_token = tokenizer.eos_token
 
@@ -111,7 +115,11 @@ class TopicPatternAgent:
             try:
                 from peft import PeftModel
 
-                base_model = AutoModelForCausalLM.from_pretrained(self.base_model_name, **model_kwargs)
+                base_model = AutoModelForCausalLM.from_pretrained(
+                    self.base_model_name,
+                    local_files_only=HF_LOCAL_FILES_ONLY,
+                    **model_kwargs,
+                )
                 model = PeftModel.from_pretrained(base_model, adapter_path)
             except Exception as exc:
                 self.last_error = f"PEFT load failed: {exc}"

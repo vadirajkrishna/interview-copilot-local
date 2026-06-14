@@ -204,29 +204,48 @@ def is_repetitive_hallucination(text: str) -> bool:
     return most_common / len(words) >= 0.65
 
 
-async def transcribe_audio_file(audio_path: str, model: str = WHISPER_MODEL) -> str:
+async def transcribe_audio_file(
+    audio_path: str,
+    model: str = WHISPER_MODEL,
+    backend: str | None = None,
+    hf_model: str = HF_WHISPER_MODEL,
+) -> str:
     if not audio_path:
         return ""
 
-    return await asyncio.to_thread(_transcribe_audio_file_sync, audio_path, model)
+    return await asyncio.to_thread(_transcribe_audio_file_sync, audio_path, model, backend, hf_model)
 
 
 async def transcribe_audio_array(
     sample_rate: int,
     audio: np.ndarray,
     model: str = WHISPER_MODEL,
+    backend: str | None = None,
+    hf_model: str = HF_WHISPER_MODEL,
     **decode_options: Any,
 ) -> str:
     if audio.size == 0:
         return ""
 
     waveform = prepare_audio_array(sample_rate, audio)
-    return await asyncio.to_thread(_transcribe_audio_array_sync, waveform, model, decode_options)
+    return await asyncio.to_thread(
+        _transcribe_audio_array_sync,
+        waveform,
+        model,
+        decode_options,
+        backend,
+        hf_model,
+    )
 
 
-def _transcribe_audio_file_sync(audio_path: str, model: str) -> str:
-    if STT_BACKEND == "transformers":
-        return _transcribe_with_transformers(audio_path, HF_WHISPER_MODEL)
+def _transcribe_audio_file_sync(
+    audio_path: str,
+    model: str,
+    backend: str | None = None,
+    hf_model: str = HF_WHISPER_MODEL,
+) -> str:
+    if (backend or STT_BACKEND) == "transformers":
+        return _transcribe_with_transformers(audio_path, hf_model)
 
     try:
         ensure_ffmpeg_on_path()
@@ -244,11 +263,13 @@ def _transcribe_audio_array_sync(
     waveform: np.ndarray,
     model: str,
     decode_options: dict[str, Any] | None = None,
+    backend: str | None = None,
+    hf_model: str = HF_WHISPER_MODEL,
 ) -> str:
-    if STT_BACKEND == "transformers":
+    if (backend or STT_BACKEND) == "transformers":
         return _transcribe_with_transformers(
             {"array": waveform.astype(np.float32), "sampling_rate": 16000},
-            HF_WHISPER_MODEL,
+            hf_model,
         )
 
     try:

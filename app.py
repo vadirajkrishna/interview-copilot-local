@@ -304,6 +304,8 @@ LIVE_CARD_ANALYSIS_MIN_DELTA_CHARS = 30
 LIVE_FAST_QUESTION_WINDOW_CHARS = 420
 LIVE_FAST_MIN_DELTA_CHARS = 90
 LIVE_FAST_DUPLICATE_SIMILARITY = 0.78
+BROWSER_STREAM_STEP_SECONDS = 2.0
+BROWSER_STREAM_CONTEXT_SECONDS = 12.0
 LIVE_TARGET_FRAMEWORKS = {"Technical", "System Design"}
 LIVE_QUESTION_MARKERS = (
     "first,",
@@ -694,7 +696,7 @@ async def transcribe_and_coach(
     if audio_input is None:
         return "Record audio first, then press Transcribe & Coach.", render_answer_card(), "", {}
 
-    transcript = await transcribe_audio_input(audio_input)
+    transcript = await transcribe_audio_input(audio_input, use_space_stt=True)
     if transcript.startswith("[transcription unavailable:"):
         return transcript, render_answer_card(), "", {}
 
@@ -742,25 +744,28 @@ async def stream_live_transcript(
     sample_rate = int(state.get("sample_rate") or 16000)
     processed_until = int(state.get("processed_until") or 0)
     available = 0 if audio_buffer is None else len(audio_buffer) - processed_until
-    if available < sample_rate * 3:
+    transcript_so_far = latest_stream_transcript(state, current_transcript)
+    if available < int(sample_rate * BROWSER_STREAM_STEP_SECONDS):
         return (
-            current_transcript or "",
+            transcript_so_far,
             state.get("card_html") or render_answer_card(),
             format_stream_status(state, "buffering audio"),
             state,
             state.get("card_state") or {},
         )
 
-    overlap = int(sample_rate * 0.5)
-    start = max(0, processed_until - overlap)
+    context_samples = int(sample_rate * BROWSER_STREAM_CONTEXT_SECONDS)
     end = len(audio_buffer)
+    start = max(0, end - context_samples)
     audio_window = audio_buffer[start:end].copy()
+    new_audio = audio_buffer[processed_until:end].copy()
     state["processed_until"] = end
-    rms = audio_rms(audio_window)
+    state["last_window_seconds"] = len(audio_window) / sample_rate
+    rms = audio_rms(new_audio)
     state["last_rms"] = rms
     if rms < 0.003:
         return (
-            current_transcript or "",
+            transcript_so_far,
             state.get("card_html") or render_answer_card(),
             format_stream_status(state, "quiet audio skipped"),
             state,
@@ -771,6 +776,7 @@ async def stream_live_transcript(
         sample_rate,
         audio_window,
         model=STREAMING_WHISPER_MODEL,
+        backend="transformers",
         temperature=0.0,
         condition_on_previous_text=False,
         compression_ratio_threshold=1.8,
@@ -779,7 +785,7 @@ async def stream_live_transcript(
     )
     if not chunk_text or chunk_text.startswith("[transcription unavailable:"):
         return (
-            current_transcript or "",
+            transcript_so_far,
             state.get("card_html") or render_answer_card(),
             format_stream_status(state, chunk_text or "no speech detected yet"),
             state,
@@ -789,7 +795,7 @@ async def stream_live_transcript(
         state["rejected"] = int(state.get("rejected") or 0) + 1
         state["last_text"] = f"rejected: {chunk_text[:60]}"
         return (
-            current_transcript or "",
+            transcript_so_far,
             state.get("card_html") or render_answer_card(),
             format_stream_status(state, "repeated-word output skipped"),
             state,
@@ -798,7 +804,8 @@ async def stream_live_transcript(
 
     state["transcriptions"] = int(state.get("transcriptions") or 0) + 1
     state["last_text"] = chunk_text
-    updated_transcript = merge_transcript_text(current_transcript or "", chunk_text)
+    updated_transcript = merge_transcript_text(transcript_so_far, chunk_text)
+    state["transcript"] = updated_transcript
     card_html, card_state = await monitor_answer_card(updated_transcript, state, force=True)
     state["card_html"] = card_html
     state["card_state"] = card_state
@@ -836,12 +843,13 @@ async def stop_backend_live_transcript() -> str:
     return "Stopped live audio capture"
 
 
-async def transcribe_audio_input(audio_input: Any) -> str:
+async def transcribe_audio_input(audio_input: Any, use_space_stt: bool = False) -> str:
+    backend = "transformers" if use_space_stt else None
     if isinstance(audio_input, str):
-        return await transcribe_audio_file(audio_input)
+        return await transcribe_audio_file(audio_input, backend=backend)
     if isinstance(audio_input, tuple) and len(audio_input) == 2:
         sample_rate, audio = audio_input
-        return await transcribe_audio_array(int(sample_rate), np.asarray(audio))
+        return await transcribe_audio_array(int(sample_rate), np.asarray(audio), backend=backend)
     return "[transcription unavailable: unsupported audio input]"
 
 
@@ -1265,12 +1273,15 @@ def fresh_stream_state() -> dict[str, Any]:
     return {
         "sample_rate": None,
         "audio_buffer": np.array([], dtype=np.float32),
+        "transcript": "",
+        "last_input_audio": np.array([], dtype=np.float32),
         "last_seen_samples": 0,
         "processed_until": 0,
         "chunks": 0,
         "transcriptions": 0,
         "rejected": 0,
         "last_rms": 0.0,
+        "last_window_seconds": 0.0,
         "last_text": "",
     }
 
@@ -1290,12 +1301,17 @@ def update_stream_state(audio_input: Any, stream_state: dict[str, Any] | None) -
         audio = audio.astype(np.float32, copy=False)
 
     last_seen = int(state.get("last_seen_samples") or 0)
-    if len(audio) > last_seen:
+    previous_input = state.get("last_input_audio")
+    if previous_input is None:
+        previous_input = np.array([], dtype=np.float32)
+
+    if len(audio) > last_seen and audio_has_previous_prefix(audio, previous_input):
         new_audio = audio[last_seen:]
         state["last_seen_samples"] = len(audio)
     else:
         new_audio = audio
         state["last_seen_samples"] = len(audio)
+    state["last_input_audio"] = audio[-int(sample_rate) * 45 :].copy()
 
     audio_buffer = state.get("audio_buffer")
     if audio_buffer is None:
@@ -1323,14 +1339,33 @@ def format_stream_status(state: dict[str, Any], message: str) -> str:
     transcriptions = int(state.get("transcriptions") or 0)
     rejected = int(state.get("rejected") or 0)
     rms = float(state.get("last_rms") or 0.0)
+    window_seconds = float(state.get("last_window_seconds") or 0.0)
     last_text = str(state.get("last_text") or "").strip()
     if last_text:
         last_text = f" | last: {last_text[:80]}"
     return (
         f"{message} | chunks: {chunks} | buffered: {buffered_seconds:.1f}s "
         f"| processed: {processed_seconds:.1f}s | runs: {transcriptions} "
-        f"| rejected: {rejected} | rms: {rms:.4f}{last_text}"
+        f"| window: {window_seconds:.1f}s | rejected: {rejected} | rms: {rms:.4f}{last_text}"
     )
+
+
+def latest_stream_transcript(state: dict[str, Any], current_transcript: str) -> str:
+    state_transcript = str(state.get("transcript") or "").strip()
+    visible_transcript = str(current_transcript or "").strip()
+    if len(visible_transcript) > len(state_transcript):
+        state["transcript"] = visible_transcript
+        return visible_transcript
+    return state_transcript
+
+
+def audio_has_previous_prefix(audio: np.ndarray, previous_audio: np.ndarray) -> bool:
+    if previous_audio.size == 0:
+        return False
+    compare_samples = min(previous_audio.size, audio.size, 8000)
+    if compare_samples <= 0:
+        return False
+    return bool(np.allclose(audio[:compare_samples], previous_audio[:compare_samples], atol=1e-4))
 
 
 def audio_rms(audio: np.ndarray) -> float:
@@ -1581,7 +1616,7 @@ with gr.Blocks(elem_id="app-shell") as demo:
     stream_state = gr.State(fresh_stream_state())
     card_monitor_state = gr.State(fresh_card_monitor_state())
 
-    runtime_label = "Hugging Face Space browser-mic demo" if HF_SPACE_MODE else "Local real-time system-audio coaching"
+    runtime_label = "Hugging Face Space browser-mic demo" if HF_SPACE_MODE else "Local and Space-style audio coaching"
     gr.Markdown(
         f"# InterviewCoach\n{runtime_label} with live transcript, framework cards, and post-session evaluation.",
         elem_id="app-header",
@@ -1596,17 +1631,18 @@ with gr.Blocks(elem_id="app-shell") as demo:
         with gr.Tab("Live"):
             with gr.Row(equal_height=True, elem_id="live_grid"):
                 with gr.Column(scale=2, min_width=180, elem_classes=["compact-panel"]):
-                    if HF_SPACE_MODE:
-                        gr.Markdown("Browser microphone", elem_classes=["section-title"])
-                        mic = gr.Audio(
-                            sources=["microphone"],
-                            type="numpy",
-                            label="Record from browser",
-                            elem_id="mic_box",
-                        )
-                        with gr.Row(elem_classes=["action-row"]):
-                            transcribe_coach = gr.Button("Transcribe & Process", variant="primary")
-                    else:
+                    gr.Markdown("Space-style browser mic", elem_classes=["section-title"])
+                    mic = gr.Audio(
+                        sources=["microphone"],
+                        type="numpy",
+                        label="Record from browser",
+                        streaming=True,
+                        elem_id="mic_box",
+                    )
+                    with gr.Row(elem_classes=["action-row"]):
+                        transcribe_coach = gr.Button("Transcribe & Process", variant="primary")
+
+                    if not HF_SPACE_MODE:
                         gr.Markdown("System audio", elem_classes=["section-title"])
                         with gr.Row(elem_classes=["action-row"]):
                             start_live = gr.Button("Start System Audio", variant="secondary")
@@ -1656,14 +1692,19 @@ with gr.Blocks(elem_id="app-shell") as demo:
             report = gr.Textbox(label="Evaluation Report", lines=16, interactive=False, elem_id="report_box")
 
     start.click(start_session, inputs=[company, role], outputs=[session_id, status])
-    if HF_SPACE_MODE:
-        transcribe_coach.click(
-            transcribe_and_coach,
-            inputs=[session_id, mic, live_transcript],
-            outputs=[live_transcript, answer_card, log, last_state],
-            queue=True,
-        )
-    else:
+    transcribe_coach.click(
+        transcribe_and_coach,
+        inputs=[session_id, mic, live_transcript],
+        outputs=[live_transcript, answer_card, log, last_state],
+        queue=True,
+    )
+    mic.stream(
+        stream_live_transcript,
+        inputs=[mic, live_transcript, stream_state],
+        outputs=[live_transcript, answer_card, stream_status, stream_state, last_state],
+        queue=True,
+    )
+    if not HF_SPACE_MODE:
         start_live.click(
             start_backend_live_transcript,
             outputs=[live_transcript, answer_card, stream_status, last_state, card_monitor_state],
