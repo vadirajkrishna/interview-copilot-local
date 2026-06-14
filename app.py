@@ -6,6 +6,9 @@ import os
 import re
 from typing import Any
 
+if os.environ.get("SPACE_ID") or os.environ.get("INTERVIEW_COACH_RUNTIME") == "space":
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import gradio as gr
 import numpy as np
 

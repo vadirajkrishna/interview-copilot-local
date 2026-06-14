@@ -302,12 +302,14 @@ def _transcribe_with_transformers(audio_input: Any, model: str) -> str:
 def get_asr_pipeline(model: str):
     global _asr_pipeline
     if _asr_pipeline is None:
+        import torch
         from transformers import pipeline
 
         _asr_pipeline = pipeline(
             "automatic-speech-recognition",
             model=model,
             device=-1,
+            torch_dtype=torch.float32,
         )
     return _asr_pipeline
 
