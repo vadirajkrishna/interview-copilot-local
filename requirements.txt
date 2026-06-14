@@ -1,13 +1,14 @@
-aiosqlite>=0.20.0
 accelerate>=1.9.0
-gradio>=4.44.0
+aiosqlite>=0.20.0
+gradio>=6.16.0
+huggingface-hub>=0.33.0
 imageio-ffmpeg>=0.5.1
 langgraph>=0.2.0
 mlx-whisper>=0.4.0; platform_system == "Darwin"
-modal>=1.1.0
+numpy>=1.26.0
 peft>=0.16.0
 pyyaml>=6.0.2
 scipy>=1.11.0
 sounddevice>=0.5.1; platform_system == "Darwin"
-torch>=2.3.0
+torch>=2.4.0
 transformers>=4.54.0

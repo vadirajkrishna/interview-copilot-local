@@ -12,7 +12,15 @@ import numpy as np
 from agents.evaluator import EvaluationAgent
 from agents.hf_chat import HuggingFaceChatModel
 from agents.topic_pattern import TopicPatternAgent
-from config import APP_HOST, APP_PORT, BASE_DIR, GENERAL_LLM_MODEL, HF_SPACE_MODE, STREAMING_WHISPER_MODEL
+from config import (
+    APP_HOST,
+    APP_PORT,
+    BASE_DIR,
+    GENERAL_LLM_MODEL,
+    HF_SPACE_MODE,
+    STREAMING_WHISPER_MODEL,
+    TOPIC_PATTERN_MODEL,
+)
 from db.queries import (
     add_evaluation,
     append_exchange_answer,
@@ -410,7 +418,7 @@ async def classify_topic_and_steps(question: str) -> dict[str, Any]:
             "model_unavailable": True,
             "message": (
                 "Topic/steps model unavailable. Expected Hugging Face model "
-                f"vadirajkrishna/interview-coach-3b.{suffix}"
+                f"{TOPIC_PATTERN_MODEL}.{suffix}"
             ),
         }
 

@@ -28,7 +28,7 @@ Interview conversations are messy: greetings, interviewer transitions, repeated 
 The app uses different local models (sourced from Hugging Face) for different jobs instead of asking one model to do everything:
 
 - Speech-to-text: Whisper via `mlx-whisper` (from Hugging Face) for local audio transcription.
-- Topic and pattern detection: fine-tuned [vadirajkrishna/interview-coach-3b](https://huggingface.co/vadirajkrishna/interview-coach-3b) (available on Hugging Face) to identify the interview question type and coarse pattern.
+- Topic and pattern detection: fine-tuned [build-small-hackathon/interview-coach-3b](https://huggingface.co/build-small-hackathon/interview-coach-3b) (available on Hugging Face) to identify the interview question type and coarse pattern.
 - Coaching hints: `Qwen/Qwen2.5-3B-Instruct` (from Hugging Face) generates short, question-specific pointers for the live coaching card.
 - Transcript cleanup and Q&A extraction: the general LLM extracts structured questions and candidate answers from noisy transcripts.
 - Evaluation: the evaluator uses the saved candidate answer, not the coaching hints, to provide a benchmark answer, hiring band, strengths, weaknesses, and critical gaps.

@@ -41,7 +41,7 @@ import modal
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 # Your Hugging Face username (https://huggingface.co/settings/profile)
-HF_USERNAME = "vadirajkrishna"
+HF_USERNAME = "build-small-hackathon"
 
 # Name for the fine-tuned model repo on Hugging Face
 HF_MODEL_NAME = "interview-coach-3b"
