@@ -291,7 +291,17 @@ def _transcribe_audio_array_sync(
 def _transcribe_with_transformers(audio_input: Any, model: str) -> str:
     try:
         pipeline = get_asr_pipeline(model)
-        result = pipeline(audio_input, generate_kwargs={"language": "english", "task": "transcribe"})
+        result = pipeline(
+            audio_input,
+            chunk_length_s=20,
+            stride_length_s=3,
+            generate_kwargs={
+                "language": "english",
+                "task": "transcribe",
+                "num_beams": 1,
+                "temperature": 0.0,
+            },
+        )
         if isinstance(result, dict):
             return str(result.get("text", "")).strip()
         return str(result).strip()

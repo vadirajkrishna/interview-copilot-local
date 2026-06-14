@@ -13,7 +13,7 @@ HF_SPACE_MODE = bool(os.environ.get("SPACE_ID")) or os.environ.get("INTERVIEW_CO
 if HF_SPACE_MODE:
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
 STT_BACKEND = os.environ.get("INTERVIEW_COACH_STT_BACKEND", "transformers" if HF_SPACE_MODE else "mlx")
-HF_WHISPER_MODEL = os.environ.get("INTERVIEW_COACH_HF_WHISPER_MODEL", "openai/whisper-tiny")
+HF_WHISPER_MODEL = os.environ.get("INTERVIEW_COACH_HF_WHISPER_MODEL", "openai/whisper-small")
 APP_HOST = os.environ.get("INTERVIEW_COACH_HOST", "0.0.0.0" if HF_SPACE_MODE else "127.0.0.1")
 APP_PORT = 7860
 <<<<<<< HEAD
