@@ -305,7 +305,7 @@ GENERIC_EXTRACTION_MAX_WINDOW_CHARS = 1800
 GENERIC_EXTRACTION_MIN_LLM_DELTA_CHARS = 80
 LIVE_CARD_ANALYSIS_MIN_DELTA_CHARS = 30
 LIVE_FAST_QUESTION_WINDOW_CHARS = 420
-LIVE_FAST_MIN_DELTA_CHARS = 90
+LIVE_FAST_MIN_DELTA_CHARS = 180
 LIVE_FAST_DUPLICATE_SIMILARITY = 0.78
 BROWSER_STREAM_STEP_SECONDS = 2.0
 BROWSER_STREAM_CONTEXT_SECONDS = 12.0
@@ -347,6 +347,16 @@ LIVE_ANSWER_STARTS = (
     " sure ",
     " yeah ",
     " yes ",
+)
+LIVE_COMPLETION_PATTERNS = (
+    r"\b(is|are)\s+(this|it|that)\s+(an?\s+)?(adequate|good|bad|acceptable|enough|right|wrong)\b",
+    r"\b(is|are)\s+(this|it|that).*\bmodel\b",
+    r"\bwhat\s+(metric|metrics|would|should|do|is|are)\b",
+    r"\bhow\s+(would|should|do|can)\b",
+    r"\bwhy\s+(is|are|would|should|could|might)\b",
+    r"\bshould\s+(we|you|i|the)\b",
+    r"\bevaluate\b",
+    r"\baccuracy\b.*\b(adequate|enough|misleading|metric|problem)\b",
 )
 
 evaluator = EvaluationAgent()
@@ -1111,6 +1121,9 @@ def extract_fast_live_question_candidate(
     if len(candidate.split()) < 5:
         state["last_extraction_message"] = "Listening for a complete DS/ML/AI/System Design question."
         return None
+    if not force and not live_question_looks_complete(candidate):
+        state["last_extraction_message"] = "Listening for the interviewer to finish the question."
+        return None
 
     state["last_extraction_message"] = ""
     return candidate
@@ -1159,6 +1172,16 @@ def remove_fast_transcript_repeats(text: str) -> str:
             continue
         cleaned.append(word)
     return " ".join(cleaned)
+
+
+def live_question_looks_complete(question: str) -> bool:
+    clean = normalize_llm_text(question).rstrip("?")
+    lowered = clean.lower()
+    if len(clean.split()) >= 22 and any(re.search(pattern, lowered) for pattern in LIVE_COMPLETION_PATTERNS):
+        return True
+    if len(clean.split()) >= 12 and lowered.endswith(("?", " right", " correct", " adequate", " enough")):
+        return True
+    return False
 
 
 def question_dedupe_key(question: str) -> str:
