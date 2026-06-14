@@ -8,7 +8,7 @@ sdk_version: "6.16.0"
 python_version: "3.11"
 app_file: app.py
 pinned: false
-short_description: Local-first interview coaching with live transcription and feedback.
+short_description: Local interview coach with live feedback.
 models:
   - build-small-hackathon/interview-coach-3b
   - Qwen/Qwen2.5-3B-Instruct
