@@ -724,6 +724,28 @@ async def transcribe_and_coach(
     return transcript, render_answer_card(state), state["message"], state
 
 
+async def transcribe_browser_recording(
+    audio_input: Any,
+    current_transcript: str,
+    stream_state: dict[str, Any] | None,
+) -> tuple[str, str, dict[str, Any]]:
+    state = stream_state or fresh_stream_state()
+    if audio_input is None:
+        transcript = latest_stream_transcript(state, current_transcript)
+        return transcript, format_stream_status(state, "waiting for browser recording"), state
+
+    transcript = await transcribe_audio_input(audio_input, use_space_stt=True)
+    if transcript.startswith("[transcription unavailable:"):
+        state["last_text"] = transcript
+        return latest_stream_transcript(state, current_transcript), format_stream_status(state, transcript), state
+
+    updated_transcript = merge_transcript_text(latest_stream_transcript(state, current_transcript), transcript)
+    state["transcript"] = updated_transcript
+    state["last_text"] = transcript
+    state["transcriptions"] = int(state.get("transcriptions") or 0) + 1
+    return updated_transcript, format_stream_status(state, "recording transcribed"), state
+
+
 async def stream_live_transcript(
     audio_input: Any,
     current_transcript: str,
@@ -1640,7 +1662,7 @@ with gr.Blocks(elem_id="app-shell") as demo:
                         elem_id="mic_box",
                     )
                     with gr.Row(elem_classes=["action-row"]):
-                        transcribe_coach = gr.Button("Transcribe & Process", variant="primary")
+                        transcribe_coach = gr.Button("Process Recording", variant="primary")
 
                     if not HF_SPACE_MODE:
                         gr.Markdown("System audio", elem_classes=["section-title"])
@@ -1702,6 +1724,12 @@ with gr.Blocks(elem_id="app-shell") as demo:
         stream_live_transcript,
         inputs=[mic, live_transcript, stream_state],
         outputs=[live_transcript, answer_card, stream_status, stream_state, last_state],
+        queue=True,
+    )
+    mic.stop_recording(
+        transcribe_browser_recording,
+        inputs=[mic, live_transcript, stream_state],
+        outputs=[live_transcript, stream_status, stream_state],
         queue=True,
     )
     if not HF_SPACE_MODE:
