@@ -307,6 +307,7 @@ def get_asr_pipeline(model: str):
         _asr_pipeline = pipeline(
             "automatic-speech-recognition",
             model=model,
+            device=-1,
         )
     return _asr_pipeline
 

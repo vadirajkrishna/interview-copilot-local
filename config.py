@@ -10,6 +10,8 @@ EVALUATION_MODEL_PATH = GENERAL_LLM_MODEL
 WHISPER_MODEL = "mlx-community/whisper-small-mlx"
 STREAMING_WHISPER_MODEL = "mlx-community/whisper-tiny"
 HF_SPACE_MODE = bool(os.environ.get("SPACE_ID")) or os.environ.get("INTERVIEW_COACH_RUNTIME") == "space"
+if HF_SPACE_MODE:
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 STT_BACKEND = os.environ.get("INTERVIEW_COACH_STT_BACKEND", "transformers" if HF_SPACE_MODE else "mlx")
 HF_WHISPER_MODEL = os.environ.get("INTERVIEW_COACH_HF_WHISPER_MODEL", "openai/whisper-tiny")
 APP_HOST = os.environ.get("INTERVIEW_COACH_HOST", "0.0.0.0" if HF_SPACE_MODE else "127.0.0.1")
