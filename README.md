@@ -39,7 +39,7 @@ This keeps the live coaching path fast while allowing more careful reasoning for
 
 ## Agentic Architecture
 
-The architecture followed is shown below, built using the LangGraph framework:
+The app follows a LangGraph-style pipeline where each step has a focused responsibility:
 
 ```text
 Audio Capture -> Transcription -> Question Extraction -> Topic/Pattern Agent
