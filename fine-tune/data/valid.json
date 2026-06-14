@@ -1,0 +1,26 @@
+[
+    {
+        "prompt": "Design a Twitter trending topics feature.",
+        "completion": "Type: System Design\nSteps: Clarify scale → High-level components → Deep dive → Bottlenecks → Tradeoffs"
+    },
+    {
+        "prompt": "How would you design a food delivery app for hospitals?",
+        "completion": "Type: Product Design\nSteps: Clarify scope → Identify users → Map pain points → Propose solution → Define metrics"
+    },
+    {
+        "prompt": "How would you build a model to detect fake reviews?",
+        "completion": "Type: Data Science\nSteps: Check base rate → Choose right metric → Handle imbalance → Tune threshold → Evaluate"
+    },
+    {
+        "prompt": "How would you version and monitor ML models in production?",
+        "completion": "Type: AI Engineering\nSteps: Define metrics → Retrieval eval → Generation eval → End-to-end eval → Monitor drift"
+    },
+    {
+        "prompt": "Tell me about a time you had to change your approach mid-project.",
+        "completion": "Type: Behavioural\nSteps: Situation → Task → Action → Result → Reflection"
+    },
+    {
+        "prompt": "How many coffee cups are sold in London every day?",
+        "completion": "Type: Estimation\nSteps: Clarify → Decompose → Anchor number → Calculate → Sanity check"
+    }
+]

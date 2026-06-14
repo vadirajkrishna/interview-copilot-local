@@ -1,0 +1,43 @@
+General:
+  color: "#64748b"
+  steps:
+    - Clarify the question if needed
+    - State a concise answer
+    - Add one concrete example
+    - Close with impact or tradeoff
+Behavioral:
+  color: "#0ea5e9"
+  steps:
+    - Situation
+    - Task
+    - Action
+    - Result
+Technical:
+  color: "#22c55e"
+  steps:
+    - Restate constraints
+    - Outline the approach
+    - Discuss complexity or tradeoffs
+    - Validate with edge cases
+System Design:
+  color: "#f59e0b"
+  steps:
+    - Requirements
+    - APIs and data model
+    - Architecture
+    - Bottlenecks and tradeoffs
+Product Sense:
+  color: "#ec4899"
+  steps:
+    - User and goal
+    - Pain points
+    - Prioritized solution
+    - Success metrics
+Case:
+  color: "#a855f7"
+  steps:
+    - Clarify objective
+    - Structure the problem
+    - Estimate or analyze
+    - Recommend next step
+

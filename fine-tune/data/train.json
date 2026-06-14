@@ -1,0 +1,170 @@
+[
+    {
+        "prompt": "How would you design a URL shortener like bit.ly?",
+        "completion": "Type: System Design\nSteps: Clarify scale → High-level components → Deep dive → Bottlenecks → Tradeoffs"
+    },
+    {
+        "prompt": "Design a rate limiter for a public API.",
+        "completion": "Type: System Design\nSteps: Clarify scale → High-level components → Deep dive → Bottlenecks → Tradeoffs"
+    },
+    {
+        "prompt": "How would you architect a notification system for a banking app?",
+        "completion": "Type: System Design\nSteps: Clarify scale → High-level components → Deep dive → Bottlenecks → Tradeoffs"
+    },
+    {
+        "prompt": "Design a distributed cache like Redis.",
+        "completion": "Type: System Design\nSteps: Clarify scale → High-level components → Deep dive → Bottlenecks → Tradeoffs"
+    },
+    {
+        "prompt": "How would you build a real-time leaderboard for a gaming platform?",
+        "completion": "Type: System Design\nSteps: Clarify scale → High-level components → Deep dive → Bottlenecks → Tradeoffs"
+    },
+    {
+        "prompt": "Design a search autocomplete system.",
+        "completion": "Type: System Design\nSteps: Clarify scale → High-level components → Deep dive → Bottlenecks → Tradeoffs"
+    },
+    {
+        "prompt": "How would you design a ride-sharing service like Uber?",
+        "completion": "Type: System Design\nSteps: Clarify scale → High-level components → Deep dive → Bottlenecks → Tradeoffs"
+    },
+    {
+        "prompt": "How would you design Spotify for rural areas with poor connectivity?",
+        "completion": "Type: Product Design\nSteps: Clarify scope → Identify users → Map pain points → Propose solution → Define metrics"
+    },
+    {
+        "prompt": "How would you improve the onboarding experience for a fintech app?",
+        "completion": "Type: Product Design\nSteps: Clarify scope → Identify users → Map pain points → Propose solution → Define metrics"
+    },
+    {
+        "prompt": "Design a feature to help elderly users navigate a mobile banking app.",
+        "completion": "Type: Product Design\nSteps: Clarify scope → Identify users → Map pain points → Propose solution → Define metrics"
+    },
+    {
+        "prompt": "How would you design YouTube for blind users?",
+        "completion": "Type: Product Design\nSteps: Clarify scope → Identify users → Map pain points → Propose solution → Define metrics"
+    },
+    {
+        "prompt": "How would you redesign the checkout flow for an e-commerce app?",
+        "completion": "Type: Product Design\nSteps: Clarify scope → Identify users → Map pain points → Propose solution → Define metrics"
+    },
+    {
+        "prompt": "Design a feature to reduce churn in a subscription app.",
+        "completion": "Type: Product Design\nSteps: Clarify scope → Identify users → Map pain points → Propose solution → Define metrics"
+    },
+    {
+        "prompt": "How would you design Airbnb for pets?",
+        "completion": "Type: Product Design\nSteps: Clarify scope → Identify users → Map pain points → Propose solution → Define metrics"
+    },
+    {
+        "prompt": "How would you handle class imbalance in a fraud detection model?",
+        "completion": "Type: Data Science\nSteps: Check base rate → Choose right metric → Handle imbalance → Tune threshold → Evaluate"
+    },
+    {
+        "prompt": "How would you detect anomalies in a time series dataset?",
+        "completion": "Type: Data Science\nSteps: Define anomaly → Explore data → Choose method → Evaluate → Production concerns"
+    },
+    {
+        "prompt": "Walk me through building a churn prediction model.",
+        "completion": "Type: Data Science\nSteps: Define churn → Feature engineering → Baseline model → Iterate → Deploy"
+    },
+    {
+        "prompt": "How would you evaluate a recommender system?",
+        "completion": "Type: Data Science\nSteps: Define metric → Offline eval → A/B test → Business impact → Monitor"
+    },
+    {
+        "prompt": "How would you approach a dataset with 40% missing values?",
+        "completion": "Type: Data Science\nSteps: Understand missingness → Explore patterns → Imputation strategy → Validate → Document"
+    },
+    {
+        "prompt": "How would you build a model to predict customer lifetime value?",
+        "completion": "Type: Data Science\nSteps: Define CLV → Feature engineering → Baseline model → Iterate → Deploy"
+    },
+    {
+        "prompt": "How would you select features for a high-dimensional dataset?",
+        "completion": "Type: Data Science\nSteps: Understand data → Correlation analysis → Feature importance → Dimensionality reduction → Validate"
+    },
+    {
+        "prompt": "How would you build a RAG pipeline for a customer support chatbot?",
+        "completion": "Type: AI Engineering\nSteps: Define retrieval scope → Chunking strategy → Embedding model → Retrieval + rerank → Evaluate"
+    },
+    {
+        "prompt": "How would you reduce hallucinations in an LLM-based application?",
+        "completion": "Type: AI Engineering\nSteps: Identify sources → Grounding strategy → Prompt engineering → Evaluation → Monitoring"
+    },
+    {
+        "prompt": "How would you fine-tune an LLM for a specific domain?",
+        "completion": "Type: AI Engineering\nSteps: Define task → Curate data → Choose method → Train → Evaluate → Deploy"
+    },
+    {
+        "prompt": "How would you evaluate the quality of a RAG system?",
+        "completion": "Type: AI Engineering\nSteps: Define metrics → Retrieval eval → Generation eval → End-to-end eval → Monitor drift"
+    },
+    {
+        "prompt": "How would you deploy an LLM with sub-100ms latency requirements?",
+        "completion": "Type: AI Engineering\nSteps: Clarify latency budget → Quantisation → Runtime choice → Caching → Load test"
+    },
+    {
+        "prompt": "How would you implement guardrails for an LLM in production?",
+        "completion": "Type: AI Engineering\nSteps: Define risks → Input filtering → Output validation → Monitoring → Escalation"
+    },
+    {
+        "prompt": "How would you handle prompt injection attacks in an LLM app?",
+        "completion": "Type: AI Engineering\nSteps: Define threat model → Input sanitisation → Prompt hardening → Detection → Response"
+    },
+    {
+        "prompt": "Tell me about a time you disagreed with your manager.",
+        "completion": "Type: Behavioural\nSteps: Situation → Task → Action → Result → Reflection"
+    },
+    {
+        "prompt": "Give me an example of when you had to deliver under a tight deadline.",
+        "completion": "Type: Behavioural\nSteps: Situation → Task → Action → Result → Reflection"
+    },
+    {
+        "prompt": "Describe a time you failed and what you learned from it.",
+        "completion": "Type: Behavioural\nSteps: Situation → Task → Action → Result → Reflection"
+    },
+    {
+        "prompt": "Tell me about a time you had to influence without authority.",
+        "completion": "Type: Behavioural\nSteps: Situation → Task → Action → Result → Reflection"
+    },
+    {
+        "prompt": "Give an example of a time you handled ambiguity well.",
+        "completion": "Type: Behavioural\nSteps: Situation → Task → Action → Result → Reflection"
+    },
+    {
+        "prompt": "Tell me about a time you took ownership of a failing project.",
+        "completion": "Type: Behavioural\nSteps: Situation → Task → Action → Result → Reflection"
+    },
+    {
+        "prompt": "Describe a situation where you had to learn something quickly.",
+        "completion": "Type: Behavioural\nSteps: Situation → Task → Action → Result → Reflection"
+    },
+    {
+        "prompt": "How many piano tuners are there in London?",
+        "completion": "Type: Estimation\nSteps: Clarify → Decompose → Anchor number → Calculate → Sanity check"
+    },
+    {
+        "prompt": "How many WhatsApp messages are sent per day globally?",
+        "completion": "Type: Estimation\nSteps: Clarify → Decompose → Anchor number → Calculate → Sanity check"
+    },
+    {
+        "prompt": "Estimate the storage required for all photos on Instagram.",
+        "completion": "Type: Estimation\nSteps: Clarify → Decompose → Anchor number → Calculate → Sanity check"
+    },
+    {
+        "prompt": "How many Ubers are active in London at 9am on a Monday?",
+        "completion": "Type: Estimation\nSteps: Clarify → Decompose → Anchor number → Calculate → Sanity check"
+    },
+    {
+        "prompt": "How much revenue does a McDonald's in central London make per year?",
+        "completion": "Type: Estimation\nSteps: Clarify → Decompose → Anchor number → Calculate → Sanity check"
+    },
+    {
+        "prompt": "How many golf balls fit in a Boeing 747?",
+        "completion": "Type: Estimation\nSteps: Clarify → Decompose → Anchor number → Calculate → Sanity check"
+    },
+    {
+        "prompt": "Estimate the number of software developers in the world.",
+        "completion": "Type: Estimation\nSteps: Clarify → Decompose → Anchor number → Calculate → Sanity check"
+    }
+]
