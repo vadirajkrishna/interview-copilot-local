@@ -1,12 +1,25 @@
-<!-- ---
+---
 title: InterviewCoach
-colorFrom: teal
-colorTo: slate
+emoji: 🎙️
+colorFrom: green
+colorTo: gray
 sdk: gradio
-sdk_version: 6.16.0
+sdk_version: "6.16.0"
+python_version: "3.11"
 app_file: app.py
 pinned: false
---- -->
+short_description: Local-first interview coaching with live transcription and feedback.
+models:
+  - build-small-hackathon/interview-coach-3b
+  - Qwen/Qwen2.5-3B-Instruct
+  - openai/whisper-tiny
+tags:
+  - gradio
+  - interview
+  - speech-to-text
+  - langgraph
+  - local-ai
+---
 
 # Interview Coach
 
