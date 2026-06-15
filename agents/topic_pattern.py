@@ -29,6 +29,16 @@ class TopicPatternAgent:
         with open(frameworks_path, "r", encoding="utf-8") as file:
             self.frameworks: dict[str, dict[str, Any]] = yaml.safe_load(file)
 
+    @property
+    def is_loaded(self) -> bool:
+        return self._model is not None and self._tokenizer is not None
+
+    async def warmup(self) -> None:
+        if not self.enabled:
+            self.last_error = "Topic/pattern model is disabled."
+            return
+        await asyncio.to_thread(self._ensure_model_loaded_sync)
+
     async def analyze(self, question: str) -> dict[str, Any]:
         if not self.enabled or not question.strip():
             self.last_error = "Topic/pattern model is disabled or question is empty."

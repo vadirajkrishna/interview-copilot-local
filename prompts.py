@@ -29,6 +29,96 @@ Fine-tuned coarse steps, for context only:
 
 Generate question-specific coaching hints the candidate can glance at while answering."""
 
+QUESTION_DETECTOR_SYSTEM_PROMPT = """You analyze live interview transcripts to detect interviewer questions.
+Return valid JSON only. Do not include explanations."""
+
+QUESTION_DETECTOR_USER_PROMPT = """You are analyzing a live interview transcript to detect interview questions.
+
+Given the transcript excerpt below, scan backward from the end and determine the latest complete interviewer question.
+
+A question is detected when:
+- Starts with: what, how, why, when, where, which, who, have, has, had,
+  can, could, would, should, do, does, did, tell me, describe, explain,
+  walk me through, give me an example, imagine, suppose, let's say
+- Is directed at the candidate (not small talk or acknowledgement)
+- Is complete — not a half sentence still in progress
+- Is a target technical interview question about Data Science, Machine Learning,
+  AI Engineering, MLOps, statistics, analytics, coding, algorithms, or System Design
+
+NOT a question:
+- Interviewer acknowledgements: "good", "great", "okay", "I see"
+- Candidate answers
+- App/tool/meta discussion, such as "how does it work here?" or
+  "what does it mean to extract relevant questions?"
+- Interview logistics, process discussion, or generic conversation
+- Examples inside candidate answers, such as "like classifying emails..." or "like grouping customers..."
+- Filler or thinking out loud: "so...", "right...", "hmm"
+- Incomplete sentences cut off mid-thought
+
+Additional live-interview context:
+- Previous shown question: {previous_question}
+- Observed silence after this transcript: {pause_seconds:.1f} seconds
+- First identify all complete interviewer questions in this excerpt in chronological order.
+- Then return the last complete interviewer question nearest the end of the transcript.
+- Always prefer the question closest to the end of the transcript, not the first question in the excerpt.
+- If the end of the transcript is a candidate answer, scan backward to the interviewer question immediately before that answer.
+- If Previous shown question is not None, do not return it again; detect only a newer interviewer question after it.
+- If Previous shown question is None, recover the first complete interviewer question even if the candidate answer already follows.
+- If the candidate answer has started, return the interviewer question immediately before that answer.
+- Do not return answer conclusions such as "the key difference is...", "the main reason is...", "this means...", or "the model finds...".
+- Do not rewrite candidate answer text into a new question. For example, if the transcript says "In supervised learning, the model trains on labeled data", do not return "Can you explain how this differs from unsupervised learning?"
+- Do not infer a new prompt from examples inside the answer. For example, do not turn "like grouping customers" into "give me an example of unsupervised learning".
+- Clean fragmented STT wording into one faithful question without adding facts from the answer.
+
+Transcript:
+{transcript}
+
+Respond in JSON only, no explanation:
+{{
+  "question_detected": true or false,
+  "question": "clean version of the question or null",
+  "speaker": "interviewer or candidate or unknown",
+  "confidence": "high or medium or low",
+  "is_target": true or false,
+  "domain": "data_science, machine_learning, ai_engineering, mlops, statistics, analytics, coding, algorithms, system_design, or other"
+}}"""
+
+QUESTION_LIST_DETECTOR_SYSTEM_PROMPT = """You extract interviewer questions from noisy live interview transcripts.
+Return valid JSON only. Do not include explanations."""
+
+QUESTION_LIST_DETECTOR_USER_PROMPT = """You are analyzing a live interview transcript.
+
+Extract every complete interviewer question in chronological order.
+
+Rules:
+- Only include questions asked by the interviewer and directed at the candidate.
+- Only include target technical interview questions about Data Science, Machine Learning, AI Engineering, MLOps, statistics, analytics, coding, algorithms, or System Design.
+- Exclude app/tool/meta discussion, interview logistics, process discussion, and generic conversation.
+- Ignore candidate answers, examples inside answers, filler, acknowledgements, and small talk.
+- Clean fragmented STT wording into one faithful question.
+- Do not invent questions from answer content.
+- Do not include incomplete fragments.
+- If a previous shown question is provided, still include it if it appears, but the caller will choose a newer one.
+
+Previous shown question:
+{previous_question}
+
+Transcript:
+{transcript}
+
+Respond in JSON only:
+{{
+  "questions": [
+    {{
+      "question": "clean question",
+      "speaker": "interviewer or candidate or unknown",
+      "confidence": "high or medium or low",
+      "is_target": true or false,
+      "domain": "data_science, machine_learning, ai_engineering, mlops, statistics, analytics, coding, algorithms, system_design, or other"
+    }}
+  ]
+}}"""
+
 EVALUATOR_SYSTEM_PROMPT = """You are a senior ML interview evaluator.
 You are NOT generating a perfect answer.
 You are assessing whether the candidate demonstrated structured thinking.
@@ -96,8 +186,8 @@ Return only valid JSON with keys:
 "complete": boolean,
 "reason": string.
 
-Target questions are only Data Science, Machine Learning, AI Engineering, or System Design interview questions.
-Reject greetings, logistics, small talk, background discussion, interviewer transitions, and generic interview setup.
+Target questions are only Data Science, Machine Learning, AI Engineering, MLOps, statistics, analytics, coding, algorithms, or System Design interview questions.
+Reject greetings, logistics, small talk, background discussion, interviewer transitions, generic interview setup, app/tool/meta discussion, and process questions about extracting questions.
 
 Rules:
 - Extract the interviewer's actual target question, not a candidate clarification.
@@ -203,14 +293,19 @@ Target questions are only Data Science, Machine Learning, AI Engineering, MLOps,
 Rules:
 - Extract every target interviewer question in chronological order.
 - Do not only extract the latest question.
+- Yes/no experience prompts are valid interview questions when technical, for example "Have you worked with any supervised learning algorithms?"
 - Each candidate answer belongs to the target question immediately before it.
+- A new exchange can start after interviewer transitions such as "good", "let's move to the next", or "next question".
 - Preserve candidate answers fully. Do not summarize, rewrite conceptually, improve, or add missing ideas.
 - Do not shorten the candidate answer to only the final/direct sentence. Keep definitions, reasoning, examples, caveats, and explanatory setup.
+- Keep the candidate's full spoken answer even when it has grammar errors or repeated fragments; only remove obvious STT noise and duplicated adjacent words.
+- Never replace a long candidate answer with a polished summary.
 - The answer ends only when the next interviewer question, interviewer transition, or transcript end begins.
 - Only clean obvious STT noise: repeated words, broken punctuation, filler fragments, and spelling/word recognition mistakes when meaning is clear.
 - Correct obvious ML/STT word errors when context is clear, such as "Frot" -> "fraud" and "data trips/drips" -> "data drift".
 - Never use candidate answer content to invent or expand the interviewer question.
 - If the interviewer question is noisy but inferable, reconstruct the shortest faithful question.
+- If the same question appears as fragments or repeated repairs, return one clean version only.
 - If a target question has no answer, return an empty string for "answer".
 - Exclude greetings, logistics, transitions, interviewer praise, and non-target small talk.
 - Keep "reason" under 20 words.
@@ -221,7 +316,11 @@ JSON: {"exchanges":[{"question":"You have a dataset where 95% of transactions ar
 
 Example:
 Transcript: "What is and what is x and y variables. Yes. So the linear regression is F form of machine learning algorithm predict an output based on certain features given input into the model. The x variables are called the predictors and the y variable is the target variable. For example, if I want to predict on the number of years experience that's a classic linear regression."
-JSON: {"exchanges":[{"question":"What are x and y variables in linear regression?","answer":"Linear regression is a form of machine learning algorithm that predicts an output based on certain features given as input into the model. The x variables are called the predictors and the y variable is the target variable. For example, if I want to predict based on the number of years of experience, that's a classic linear regression example.","is_target":true,"complete":true,"reason":"Preserved full candidate answer."}]}"""
+JSON: {"exchanges":[{"question":"What are x and y variables in linear regression?","answer":"Linear regression is a form of machine learning algorithm that predicts an output based on certain features given as input into the model. The x variables are called the predictors and the y variable is the target variable. For example, if I want to predict based on the number of years of experience, that's a classic linear regression example.","is_target":true,"complete":true,"reason":"Preserved full candidate answer."}]}
+
+Example:
+Transcript: "What's the difference between supervised and unsupervised machine learning. In supervised learning the model trains on labeled data. In unsupervised learning there are no labels. Good. Have you worked with any supervised learning algorithms? Yes, I have used logistic regression for binary classification and gradient boosting models like XGBoost."
+JSON: {"exchanges":[{"question":"What's the difference between supervised and unsupervised machine learning?","answer":"In supervised learning the model trains on labeled data. In unsupervised learning there are no labels.","is_target":true,"complete":true,"reason":"Extracted first ML question."},{"question":"Have you worked with any supervised learning algorithms?","answer":"Yes, I have used logistic regression for binary classification and gradient boosting models like XGBoost.","is_target":true,"complete":true,"reason":"Extracted technical experience question."}]}"""
 
 MULTI_EXCHANGE_EXTRACTOR_USER_PROMPT = """Transcript:
 {transcript}

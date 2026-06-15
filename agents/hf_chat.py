@@ -16,6 +16,13 @@ class HuggingFaceChatModel:
         self._load_lock = threading.Lock()
         self.last_error = ""
 
+    @property
+    def is_loaded(self) -> bool:
+        return self._model is not None and self._tokenizer is not None
+
+    async def warmup(self) -> None:
+        await asyncio.to_thread(self._ensure_model_loaded_sync)
+
     async def generate(
         self,
         system_prompt: str,

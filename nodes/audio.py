@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -10,12 +11,13 @@ from config import BASE_DIR, HF_WHISPER_MODEL, STT_BACKEND, WHISPER_MODEL
 from state import CoachState
 
 SAMPLE_RATE = 16000
-CHUNK_SECONDS = 3
-OVERLAP_SECONDS = 0.5
+CHUNK_SECONDS = 4
+OVERLAP_SECONDS = 0.75
 CHUNK_SAMPLES = int(CHUNK_SECONDS * SAMPLE_RATE)
 OVERLAP_SAMPLES = int(OVERLAP_SECONDS * SAMPLE_RATE)
-QUEUE_MAX_SIZE = 10
+QUEUE_MAX_SIZE = 3
 SILENCE_RMS_THRESHOLD = 0.003
+QUESTION_PAUSE_SECONDS = 1.5
 
 executor = ThreadPoolExecutor(max_workers=2)
 _asr_pipeline = None
@@ -53,10 +55,12 @@ class LiveAudioTranscriber:
         self.audio_queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=QUEUE_MAX_SIZE)
         self.stop_event = asyncio.Event()
         self.capture_task: asyncio.Task | None = None
+        self.stream_id = 0
 
     async def start(self) -> None:
         if self.capture_task and not self.capture_task.done():
             await self.stop()
+        self.stream_id += 1
         self.stop_event = asyncio.Event()
         self.audio_queue = asyncio.Queue(maxsize=QUEUE_MAX_SIZE)
         device_index = get_input_device()
@@ -71,15 +75,30 @@ class LiveAudioTranscriber:
     async def stop(self) -> None:
         self.stop_event.set()
         if self.capture_task:
-            await self.capture_task
+            try:
+                await asyncio.wait_for(self.capture_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                self.capture_task.cancel()
+                await asyncio.gather(self.capture_task, return_exceptions=True)
             self.capture_task = None
+        drain_queue(self.audio_queue)
 
     async def transcript_stream(self):
+        stream_id = self.stream_id
+        stop_event = self.stop_event
+        audio_queue = self.audio_queue
         transcript = ""
-        while not self.stop_event.is_set():
+        last_text_at = asyncio.get_running_loop().time()
+        last_pause_transcript = ""
+        while not stop_event.is_set() and stream_id == self.stream_id:
             try:
-                chunk = await asyncio.wait_for(self.audio_queue.get(), timeout=1.0)
+                chunk = await asyncio.wait_for(audio_queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
+                now = asyncio.get_running_loop().time()
+                pause_seconds = now - last_text_at
+                if transcript and transcript != last_pause_transcript and pause_seconds >= QUESTION_PAUSE_SECONDS:
+                    last_pause_transcript = transcript
+                    yield transcript, True, pause_seconds
                 continue
 
             try:
@@ -88,7 +107,9 @@ class LiveAudioTranscriber:
                 text = f"[live transcription error: {exc}]"
             if text:
                 transcript = merge_chunk_text(transcript, text)
-                yield transcript
+                last_text_at = asyncio.get_running_loop().time()
+                last_pause_transcript = ""
+                yield transcript, False, 0.0
 
 
 async def capture_audio(
@@ -138,6 +159,14 @@ def enqueue_chunk_nowait(audio_queue: asyncio.Queue[np.ndarray], chunk: np.ndarr
         except asyncio.QueueEmpty:
             pass
     audio_queue.put_nowait(chunk)
+
+
+def drain_queue(audio_queue: asyncio.Queue[np.ndarray]) -> None:
+    while True:
+        try:
+            audio_queue.get_nowait()
+        except asyncio.QueueEmpty:
+            break
 
 
 async def transcribe_chunk(audio: np.ndarray, model: str = WHISPER_MODEL) -> str:
@@ -238,6 +267,29 @@ async def transcribe_audio_array(
     )
 
 
+async def warmup_transcriber(
+    model: str = WHISPER_MODEL,
+    backend: str | None = None,
+    hf_model: str = HF_WHISPER_MODEL,
+) -> None:
+    await asyncio.to_thread(_warmup_transcriber_sync, model, backend, hf_model)
+
+
+def _warmup_transcriber_sync(
+    model: str,
+    backend: str | None = None,
+    hf_model: str = HF_WHISPER_MODEL,
+) -> None:
+    if (backend or STT_BACKEND) == "transformers":
+        get_asr_pipeline(hf_model)
+        return
+
+    import mlx_whisper
+
+    waveform = np.zeros(SAMPLE_RATE, dtype=np.float32)
+    mlx_whisper.transcribe(waveform, path_or_hf_repo=model, verbose=False)
+
+
 def _transcribe_audio_file_sync(
     audio_path: str,
     model: str,
@@ -253,8 +305,8 @@ def _transcribe_audio_file_sync(
 
         result = mlx_whisper.transcribe(audio_path, path_or_hf_repo=model)
         if isinstance(result, dict):
-            return str(result.get("text", "")).strip()
-        return str(result).strip()
+            return clean_transcript_text(str(result.get("text", "")))
+        return clean_transcript_text(str(result))
     except Exception as exc:
         return f"[transcription unavailable: {exc}]"
 
@@ -282,8 +334,8 @@ def _transcribe_audio_array_sync(
             **(decode_options or {}),
         )
         if isinstance(result, dict):
-            return str(result.get("text", "")).strip()
-        return str(result).strip()
+            return clean_transcript_text(str(result.get("text", "")))
+        return clean_transcript_text(str(result))
     except Exception as exc:
         return f"[transcription unavailable: {exc}]"
 
@@ -303,10 +355,49 @@ def _transcribe_with_transformers(audio_input: Any, model: str) -> str:
             },
         )
         if isinstance(result, dict):
-            return str(result.get("text", "")).strip()
-        return str(result).strip()
+            return clean_transcript_text(str(result.get("text", "")))
+        return clean_transcript_text(str(result))
     except Exception as exc:
         return f"[transcription unavailable: {exc}]"
+
+
+def clean_transcript_text(text: str) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    text = normalize_percentage_phrases(text)
+    text = remove_adjacent_numeric_stutters(text)
+    text = re.sub(r"\b(\w+)(?:\s+\1\b)+", r"\1", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(\d+)(?:\s+\1\b)+", r"\1", text)
+    return text
+
+
+def normalize_percentage_phrases(text: str) -> str:
+    text = re.sub(r"\b(\d+(?:\.\d+)?)\s*(?:percent|percentage)\b", r"\1%", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b(\d+(?:\.\d+)?)\s+%\b", r"\1%", text)
+    return text
+
+
+def remove_adjacent_numeric_stutters(text: str) -> str:
+    tokens = text.split()
+    cleaned: list[str] = []
+    for token in tokens:
+        current_number = normalized_number_token(token)
+        previous_number = normalized_number_token(cleaned[-1]) if cleaned else ""
+        if current_number and current_number == previous_number:
+            cleaned[-1] = prefer_percentage_token(cleaned[-1], token)
+            continue
+        cleaned.append(token)
+    return " ".join(cleaned)
+
+
+def normalized_number_token(token: str) -> str:
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)(?:%|[.,!?;:]*)", token.strip())
+    return match.group(1) if match else ""
+
+
+def prefer_percentage_token(left: str, right: str) -> str:
+    if "%" in right and "%" not in left:
+        return right
+    return left
 
 
 def get_asr_pipeline(model: str):

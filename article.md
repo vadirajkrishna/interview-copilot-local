@@ -10,6 +10,11 @@ The app also helps after the interview. It extracts question-answer pairs from n
 
 The full setup is designed to run locally on a Mac. This keeps latency low, avoids sending interview audio to a cloud service, and makes the experience feel private and responsive.
 
+Project links:
+
+- Hugging Face Space README: https://huggingface.co/spaces/build-small-hackathon/interview-copilot-local/blob/main/README.md
+- Demo video: https://www.loom.com/share/d44244e43927423b9be237fbb207a65b
+
 ## Architecture
 
 At a high level, Interview Coach has two paths: a fast live coaching path and a slower post-session evaluation path.
@@ -37,13 +42,8 @@ The project uses a multi-model approach. Instead of forcing one model to handle 
 
 | Model | Approx Size | Purpose |
 | --- | ---: | --- |
-| `mlx-community/whisper-tiny` | ~39M parameters | Fast streaming transcription for live audio |
-| `mlx-community/whisper-small-mlx` | ~244M parameters | Higher-quality local transcription when needed |
-<<<<<<< HEAD
+| `mlx-community/whisper-large-v3-turbo` | ~809M parameters | Higher-quality local MLX transcription for live audio |
 | `build-small-hackathon/interview-coach-3b` | 3B base model plus LoRA adapter | Fine-tuned topic and pattern detection |
-=======
-| `vadirajkrishna/interview-coach-3b` | 3B base model plus LoRA adapter | Fine-tuned topic and pattern detection |
->>>>>>> c0f39ad (initial commit - InterviewCopilotLocal)
 | `Qwen/Qwen2.5-3B-Instruct` | ~3B parameters | General reasoning, coaching hint generation, transcript cleanup, and evaluation |
 | SQLite | Local database | Session, exchange, and evaluation storage |
 
@@ -137,6 +137,34 @@ The fix was to make the evaluator contract explicit:
 - Generic benchmark-style feedback is rejected and falls back to a local candidate-answer heuristic.
 
 This made the evaluation more faithful to what the candidate actually said.
+
+## Challenge 5: Model Loading Without Freezing the First Question
+
+Another practical challenge was model startup.
+
+The app uses multiple local models, and loading them lazily during the first live question made the product feel slow. The first question is often the most important moment in the demo, but that was exactly when model weights were being loaded into memory.
+
+The fix was to move model warmup into application initialization. When the Gradio app opens, it starts loading the general instruction model, the fine-tuned topic/pattern model, and the speech-to-text model in the background. The UI shows a simple startup status at the top and changes to “All models loaded” when the app is ready.
+
+This keeps the complexity away from the user. They do not need to know which model is loading or press a separate warmup button. They just wait for the ready message and then start the interview flow.
+
+I also had to make coaching-card generation non-blocking. Earlier, when the card was being generated, live transcription could pause because the same flow was waiting on the LLM call. The current version lets transcription continue while the coaching card loads in the background. That makes the app feel much more natural during a live conversation.
+
+## Challenge 6: Running on Hugging Face Spaces
+
+Running locally and running on Hugging Face Spaces are not the same environment.
+
+Locally, the app can use MLX Whisper on Apple Silicon and system audio routing. On Spaces, the browser microphone is the realistic input path, and model loading, caching, and hardware behavior are different.
+
+The main Spaces challenges were:
+
+- Model dependencies must be declared clearly in `requirements.txt`.
+- The Space needs enough time and memory to download and cache model snapshots.
+- ZeroGPU has different CUDA behavior, so code must avoid direct low-level CUDA initialization outside the supported execution path.
+- Browser microphone recordings behave differently from local system audio capture.
+- Live transcription can be slower on constrained hardware, so the UI needs clear status messages instead of appearing frozen.
+
+The app now separates local and Space runtime behavior where needed. Locally it can use MLX-based transcription and system audio. On Spaces it uses browser audio and avoids assumptions that only hold on a Mac. This made the demo more portable, even though the best real-time experience is still the local Mac setup.
 
 ## Local-First Runtime
 

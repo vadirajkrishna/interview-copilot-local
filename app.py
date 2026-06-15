@@ -1,5 +1,6 @@
 import asyncio
 import csv
+import hashlib
 import html
 import json
 import os
@@ -15,7 +16,6 @@ import numpy as np
 from agents.evaluator import EvaluationAgent
 from agents.hf_chat import HuggingFaceChatModel
 from agents.topic_pattern import TopicPatternAgent
-<<<<<<< HEAD
 from config import (
     APP_HOST,
     APP_PORT,
@@ -25,21 +25,21 @@ from config import (
     STREAMING_WHISPER_MODEL,
     TOPIC_PATTERN_MODEL,
 )
-=======
-from config import APP_HOST, APP_PORT, BASE_DIR, GENERAL_LLM_MODEL, HF_SPACE_MODE, STREAMING_WHISPER_MODEL
->>>>>>> c0f39ad (initial commit - InterviewCopilotLocal)
 from db.queries import (
+    add_exchange,
     add_evaluation,
+    add_transcript,
     append_exchange_answer,
     clear_all_tables,
     create_session,
     list_all_evaluations,
     list_evaluations,
     list_exchanges,
+    update_exchange_answer,
 )
 from db.schema import init_db
 from graph import coach_graph
-from nodes.audio import LiveAudioTranscriber, transcribe_audio_array, transcribe_audio_file
+from nodes.audio import LiveAudioTranscriber, transcribe_audio_array, transcribe_audio_file, warmup_transcriber
 from prompts import (
     CLARIFICATION_CHECK_SYSTEM_PROMPT,
     CLARIFICATION_CHECK_USER_PROMPT,
@@ -47,6 +47,10 @@ from prompts import (
     COACHING_GUIDANCE_USER_PROMPT,
     MULTI_EXCHANGE_EXTRACTOR_SYSTEM_PROMPT,
     MULTI_EXCHANGE_EXTRACTOR_USER_PROMPT,
+    QUESTION_LIST_DETECTOR_SYSTEM_PROMPT,
+    QUESTION_LIST_DETECTOR_USER_PROMPT,
+    QUESTION_DETECTOR_SYSTEM_PROMPT,
+    QUESTION_DETECTOR_USER_PROMPT,
     TRANSCRIPT_NORMALIZER_REPAIR_SYSTEM_PROMPT,
     TRANSCRIPT_NORMALIZER_REPAIR_USER_PROMPT,
     TRANSCRIPT_NORMALIZER_SYSTEM_PROMPT,
@@ -162,6 +166,7 @@ label,
     font-weight: 650 !important;
 }
 #status_box textarea,
+#model_status_box textarea,
 #stream_status_box textarea {
     color: var(--accent-strong) !important;
     font-size: 13px !important;
@@ -190,12 +195,18 @@ label,
 }
 #live_transcript_box textarea {
     min-height: 330px !important;
+    max-height: 520px !important;
+    overflow-y: auto !important;
+    resize: vertical !important;
 }
 #log_box textarea,
 #report_box textarea {
     min-height: 500px !important;
 }
 #status_box textarea {
+    min-height: 34px !important;
+}
+#model_status_box textarea {
     min-height: 34px !important;
 }
 #stream_status_box textarea {
@@ -301,69 +312,24 @@ FRAMEWORK_COLORS = {
     "Estimation": "#a855f7",
 }
 
-GENERIC_EXTRACTION_MAX_WINDOW_CHARS = 1800
-GENERIC_EXTRACTION_MIN_LLM_DELTA_CHARS = 80
-LIVE_CARD_ANALYSIS_MIN_DELTA_CHARS = 30
-LIVE_FAST_QUESTION_WINDOW_CHARS = 420
-LIVE_FAST_MIN_DELTA_CHARS = 180
-LIVE_FAST_DUPLICATE_SIMILARITY = 0.78
+LIVE_CARD_LLM_TIMEOUT_SECONDS = 15
+LIVE_QUESTION_CONTEXT_LINES = 10
+LIVE_QUESTION_CONTEXT_CHARS = 2200
+LIVE_QUESTION_PAUSE_SECONDS = 1.5
 BROWSER_STREAM_STEP_SECONDS = 2.0
 BROWSER_STREAM_CONTEXT_SECONDS = 12.0
-LIVE_TARGET_FRAMEWORKS = {"Technical", "System Design"}
-LIVE_QUESTION_MARKERS = (
-    "first,",
-    "first.",
-    "first ",
-    "first question",
-    "first one",
-    "second,",
-    "second.",
-    "second ",
-    "second question",
-    "third,",
-    "third.",
-    "third ",
-    "third question",
-    "next question",
-    "another question",
-    "you have",
-    "let me ask",
-    "can you",
-    "could you",
-    "tell me",
-    "explain",
-    "how would",
-    "what would",
-)
-LIVE_ANSWER_STARTS = (
-    " i would ",
-    " i will ",
-    " i can ",
-    " i think ",
-    " i would first ",
-    " first i ",
-    " my approach ",
-    " so i ",
-    " sure ",
-    " yeah ",
-    " yes ",
-)
-LIVE_COMPLETION_PATTERNS = (
-    r"\b(is|are)\s+(this|it|that)\s+(an?\s+)?(adequate|good|bad|acceptable|enough|right|wrong)\b",
-    r"\b(is|are)\s+(this|it|that).*\bmodel\b",
-    r"\bwhat\s+(metric|metrics|would|should|do|is|are)\b",
-    r"\bhow\s+(would|should|do|can)\b",
-    r"\bwhy\s+(is|are|would|should|could|might)\b",
-    r"\bshould\s+(we|you|i|the)\b",
-    r"\bevaluate\b",
-    r"\baccuracy\b.*\b(adequate|enough|misleading|metric|problem)\b",
-)
 
 evaluator = EvaluationAgent()
 general_llm = HuggingFaceChatModel(GENERAL_LLM_MODEL)
 topic_pattern_agent = TopicPatternAgent()
 live_audio = LiveAudioTranscriber()
 topic_model_warmup_task: asyncio.Task | None = None
+model_warmup_task: asyncio.Task | None = None
+model_status: dict[str, str] = {
+    "General LLM": "not loaded",
+    "Topic/steps model": "not loaded",
+    "Speech-to-text": "not loaded",
+}
 
 
 def ensure_topic_model_warmup() -> None:
@@ -375,8 +341,91 @@ def ensure_topic_model_warmup() -> None:
     )
 
 
+def render_model_status() -> str:
+    statuses = dict(model_status)
+    if general_llm.is_loaded:
+        statuses["General LLM"] = "loaded"
+    if topic_pattern_agent.is_loaded:
+        statuses["Topic/steps model"] = "loaded"
+    elif not topic_pattern_agent.enabled:
+        statuses["Topic/steps model"] = "disabled"
+    return "\n".join(f"{name}: {status}" for name, status in statuses.items())
+
+
+def all_models_ready() -> bool:
+    return (
+        general_llm.is_loaded
+        and (topic_pattern_agent.is_loaded or not topic_pattern_agent.enabled)
+        and model_status.get("Speech-to-text") == "loaded"
+    )
+
+
+def render_startup_status() -> str:
+    if all_models_ready():
+        return "All models loaded."
+    return "Loading models..."
+
+
+def live_detector_timeout_message(detector_name: str = "Question detector") -> str:
+    if all_models_ready():
+        return f"{detector_name} is taking longer than expected. Keeping the transcript live; try again in a moment."
+    return f"{detector_name} is still loading. Try again after startup status shows All models loaded."
+
+
+async def warmup_all_models():
+    global model_warmup_task
+    if model_warmup_task and not model_warmup_task.done():
+        yield render_startup_status()
+        return
+
+    model_warmup_task = asyncio.current_task()
+    model_status["General LLM"] = "loading"
+    model_status["Topic/steps model"] = "loading" if topic_pattern_agent.enabled else "disabled"
+    model_status["Speech-to-text"] = "loading"
+    yield render_startup_status()
+
+    try:
+        await general_llm.warmup()
+        model_status["General LLM"] = "loaded"
+    except Exception as exc:
+        model_status["General LLM"] = f"error: {exc}"
+    yield render_startup_status()
+
+    if topic_pattern_agent.enabled:
+        try:
+            await topic_pattern_agent.warmup()
+            model_status["Topic/steps model"] = "loaded"
+        except Exception as exc:
+            model_status["Topic/steps model"] = f"error: {exc}"
+    yield render_startup_status()
+
+    try:
+        await warmup_transcriber(
+            model=STREAMING_WHISPER_MODEL,
+            backend="transformers" if HF_SPACE_MODE else None,
+        )
+        model_status["Speech-to-text"] = "loaded"
+    except Exception as exc:
+        model_status["Speech-to-text"] = f"error: {exc}"
+    yield render_startup_status() if all_models_ready() else render_model_status()
+
+
+def ensure_model_warmup_background() -> None:
+    global model_warmup_task
+    if model_warmup_task and not model_warmup_task.done():
+        return
+    if all_models_ready():
+        return
+
+    async def consume_warmup() -> None:
+        async for _ in warmup_all_models():
+            pass
+
+    model_warmup_task = asyncio.create_task(consume_warmup())
+
+
 async def start_session(company: str, role: str) -> tuple[int, str]:
-    ensure_topic_model_warmup()
+    ensure_model_warmup_background()
     await init_db()
     session_id = await create_session(company=company, role=role)
     return session_id, f"Session {session_id} started"
@@ -437,11 +486,7 @@ async def classify_topic_and_steps(question: str) -> dict[str, Any]:
             "model_unavailable": True,
             "message": (
                 "Topic/steps model unavailable. Expected Hugging Face model "
-<<<<<<< HEAD
                 f"{TOPIC_PATTERN_MODEL}.{suffix}"
-=======
-                f"vadirajkrishna/interview-coach-3b.{suffix}"
->>>>>>> c0f39ad (initial commit - InterviewCopilotLocal)
             ),
         }
 
@@ -575,8 +620,101 @@ async def extract_all_interview_exchanges_with_llm(transcript: str) -> list[dict
         normalized = normalize_normalizer_payload(item)
         if not normalized["is_target"] or not normalized["complete"] or not normalized["question"]:
             continue
+        if not is_target_coaching_question(normalized["question"], item):
+            continue
         cleaned.append(normalized)
     return cleaned
+
+
+def dedupe_extracted_exchanges(exchanges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    for exchange in exchanges:
+        question = normalize_llm_text(str(exchange.get("question", "")))
+        answer = normalize_llm_text(str(exchange.get("answer", "")))
+        if not question or question_looks_incomplete(question):
+            continue
+
+        current = {**exchange, "question": question, "answer": answer}
+        current_key = canonical_question_key(question)
+        duplicate_index = -1
+        for index, existing in enumerate(deduped):
+            existing_key = canonical_question_key(str(existing.get("question", "")))
+            if question_keys_are_similar(current_key, existing_key):
+                duplicate_index = index
+                break
+
+        if duplicate_index == -1:
+            deduped.append(current)
+            continue
+
+        existing = deduped[duplicate_index]
+        if len(question.split()) > len(str(existing.get("question", "")).split()):
+            existing["question"] = question
+        if len(answer) > len(str(existing.get("answer", ""))):
+            existing["answer"] = answer
+    return deduped
+
+
+def repair_missing_answers_from_transcript(
+    exchanges: list[dict[str, Any]],
+    transcript: str,
+    replace_existing: bool = False,
+) -> list[dict[str, Any]]:
+    if not exchanges or not transcript.strip():
+        return exchanges
+
+    repaired: list[dict[str, Any]] = []
+    cursor = 0
+    spans: list[tuple[int, int]] = []
+    for exchange in exchanges:
+        span = ordered_question_match_span(transcript, str(exchange.get("question", "")), cursor)
+        spans.append(span)
+        if span[1] > 0:
+            cursor = span[1]
+
+    for index, exchange in enumerate(exchanges):
+        item = dict(exchange)
+        if str(item.get("answer", "")).strip() and not replace_existing:
+            repaired.append(item)
+            continue
+
+        _, question_end = spans[index]
+        if question_end < 0:
+            repaired.append(item)
+            continue
+
+        next_question_start = len(transcript)
+        for next_start, _ in spans[index + 1 :]:
+            if next_start > question_end:
+                next_question_start = next_start
+                break
+
+        answer = clean_extracted_answer_text(transcript[question_end:next_question_start])
+        if answer:
+            item["answer"] = answer
+            item["reason"] = "Recovered answer from transcript."
+        repaired.append(item)
+    return repaired
+
+
+def clean_extracted_answer_text(text: str) -> str:
+    clean = normalize_llm_text(text.strip(" ?.:-,;"))
+    if not clean:
+        return ""
+    clean = re.sub(r"^(good|great|okay|ok)[,.\s]+(?=(yes|i|we|my|the|in|for)\b)", "", clean, flags=re.I)
+    clean = re.sub(
+        r"\b(good|great|okay|ok|thank you|thanks)(?:[.!?,\s]+(?:let'?s move to the next|next question)?)?$",
+        "",
+        clean,
+        flags=re.I,
+    )
+    clean = re.sub(
+        r"\b(that'?s great|that is great|good|great|okay|ok)[.!?,\s]+(?:let'?s go to the next question|let'?s move to the next question|next question)[.!?,\s]*$",
+        "",
+        clean,
+        flags=re.I,
+    )
+    return normalize_llm_text(clean)
 
 
 def normalize_llm_text(text: str) -> str:
@@ -628,6 +766,11 @@ async def handle_clarification_if_needed(
 
 
 async def is_clarification_question(previous_question: str, new_question: str, answer: str) -> bool:
+    if looks_like_interviewer_prompt(new_question) and not question_keys_are_similar(
+        canonical_question_key(previous_question),
+        canonical_question_key(new_question),
+    ):
+        return False
     heuristic = is_clarification_question_heuristic(previous_question, new_question)
     llm_result = await is_clarification_question_with_llm(previous_question, new_question, answer)
     return llm_result if llm_result is not None else heuristic
@@ -709,7 +852,7 @@ async def transcribe_and_coach(
     if audio_input is None:
         return "Record audio first, then press Transcribe & Coach.", render_answer_card(), "", {}
 
-    transcript = await transcribe_audio_input(audio_input, use_space_stt=True)
+    transcript = await transcribe_audio_input(audio_input, use_space_stt=HF_SPACE_MODE)
     if transcript.startswith("[transcription unavailable:"):
         return transcript, render_answer_card(), "", {}
 
@@ -747,12 +890,16 @@ async def transcribe_browser_recording(
         transcript = latest_stream_transcript(state, current_transcript)
         return transcript, format_stream_status(state, "waiting for browser recording"), state
 
-    transcript = await transcribe_audio_input(audio_input, use_space_stt=True)
+    transcript = await transcribe_audio_input(audio_input, use_space_stt=HF_SPACE_MODE)
     if transcript.startswith("[transcription unavailable:"):
         state["last_text"] = transcript
         return latest_stream_transcript(state, current_transcript), format_stream_status(state, transcript), state
 
-    updated_transcript = merge_transcript_text(latest_stream_transcript(state, current_transcript), transcript)
+    updated_transcript = (
+        transcript
+        if HF_SPACE_MODE
+        else merge_transcript_text(latest_stream_transcript(state, current_transcript), transcript)
+    )
     state["transcript"] = updated_transcript
     state["last_text"] = transcript
     state["transcriptions"] = int(state.get("transcriptions") or 0) + 1
@@ -760,10 +907,11 @@ async def transcribe_browser_recording(
 
 
 async def stream_live_transcript(
+    session_id: int | None,
     audio_input: Any,
     current_transcript: str,
     stream_state: dict[str, Any] | None,
-) -> tuple[str, str, str, dict[str, Any], dict[str, Any]]:
+) -> tuple[str, str, str, dict[str, Any], dict[str, Any], str]:
     if audio_input is None:
         state = stream_state or fresh_stream_state()
         return (
@@ -772,6 +920,7 @@ async def stream_live_transcript(
             format_stream_status(state, "waiting for microphone"),
             state,
             state.get("card_state") or {},
+            await render_live_log(session_id),
         )
 
     state = update_stream_state(audio_input, stream_state)
@@ -780,6 +929,19 @@ async def stream_live_transcript(
     processed_until = int(state.get("processed_until") or 0)
     available = 0 if audio_buffer is None else len(audio_buffer) - processed_until
     transcript_so_far = latest_stream_transcript(state, current_transcript)
+    if HF_SPACE_MODE:
+        if audio_buffer is not None:
+            state["processed_until"] = len(audio_buffer)
+            state["last_window_seconds"] = len(audio_buffer) / sample_rate
+            state["last_rms"] = audio_rms(audio_buffer)
+        return (
+            transcript_so_far,
+            state.get("card_html") or render_answer_card({"message": "Recording. Transcript will appear after you stop."}),
+            format_stream_status(state, "recording browser audio"),
+            state,
+            state.get("card_state") or {},
+            await render_live_log(session_id),
+        )
     if available < int(sample_rate * BROWSER_STREAM_STEP_SECONDS):
         return (
             transcript_so_far,
@@ -787,6 +949,7 @@ async def stream_live_transcript(
             format_stream_status(state, "buffering audio"),
             state,
             state.get("card_state") or {},
+            await render_live_log(session_id),
         )
 
     context_samples = int(sample_rate * BROWSER_STREAM_CONTEXT_SECONDS)
@@ -799,19 +962,46 @@ async def stream_live_transcript(
     rms = audio_rms(new_audio)
     state["last_rms"] = rms
     if rms < 0.003:
+        quiet_seconds = float(state.get("quiet_seconds") or 0.0) + (len(new_audio) / sample_rate)
+        state["quiet_seconds"] = quiet_seconds
+        if transcript_so_far:
+            if quiet_seconds >= LIVE_QUESTION_PAUSE_SECONDS:
+                card_html, card_state = await monitor_answer_card(
+                    transcript_so_far,
+                    state,
+                    session_id=session_id,
+                    force=False,
+                    fast=True,
+                    pause_check=True,
+                    pause_seconds=quiet_seconds,
+                )
+                state["card_html"] = card_html
+                state["card_state"] = card_state
+            else:
+                card_html = current_card_or_status(
+                    state,
+                    f"Pause {quiet_seconds:.1f}s. Waiting for {LIVE_QUESTION_PAUSE_SECONDS:.0f}s before checking question.",
+                )
+                state["card_html"] = card_html
+                card_state = state.get("card_state") or {}
+        else:
+            card_html = state.get("card_html") or render_answer_card()
+            card_state = state.get("card_state") or {}
         return (
             transcript_so_far,
-            state.get("card_html") or render_answer_card(),
+            card_html,
             format_stream_status(state, "quiet audio skipped"),
             state,
-            state.get("card_state") or {},
+            card_state,
+            await render_live_log(session_id),
         )
+    state["quiet_seconds"] = 0.0
 
     chunk_text = await transcribe_audio_array(
         sample_rate,
         audio_window,
         model=STREAMING_WHISPER_MODEL,
-        backend="transformers",
+        backend="transformers" if HF_SPACE_MODE else None,
         temperature=0.0,
         condition_on_previous_text=False,
         compression_ratio_threshold=1.8,
@@ -825,6 +1015,7 @@ async def stream_live_transcript(
             format_stream_status(state, chunk_text or "no speech detected yet"),
             state,
             state.get("card_state") or {},
+            await render_live_log(session_id),
         )
     if is_repetitive_hallucination(chunk_text):
         state["rejected"] = int(state.get("rejected") or 0) + 1
@@ -835,42 +1026,79 @@ async def stream_live_transcript(
             format_stream_status(state, "repeated-word output skipped"),
             state,
             state.get("card_state") or {},
+            await render_live_log(session_id),
         )
 
     state["transcriptions"] = int(state.get("transcriptions") or 0) + 1
     state["last_text"] = chunk_text
     updated_transcript = merge_transcript_text(transcript_so_far, chunk_text)
     state["transcript"] = updated_transcript
-    card_html, card_state = await monitor_answer_card(updated_transcript, state, force=True)
-    state["card_html"] = card_html
-    state["card_state"] = card_state
     return (
         updated_transcript,
-        card_html,
+        state.get("card_html") or render_answer_card({"message": "Listening for a pause before creating a card."}),
         format_stream_status(state, "transcribing"),
         state,
-        card_state,
+        state.get("card_state") or {},
+        await render_live_log(session_id),
     )
 
 
-async def start_backend_live_transcript():
-    ensure_topic_model_warmup()
+async def start_backend_live_transcript(session_id: int | None):
+    ensure_model_warmup_background()
     await live_audio.start()
     monitor_state = fresh_card_monitor_state()
-    async for transcript in live_audio.transcript_stream():
-        card_html, card_state = await monitor_answer_card(
-            transcript,
-            monitor_state,
-            force=False,
-            fast=True,
-        )
-        yield (
-            transcript,
-            card_html,
-            "Capturing system audio via BlackHole/default input",
-            card_state,
-            monitor_state,
-        )
+    card_html = monitor_state["card_html"]
+    card_state: dict[str, Any] = {}
+    card_task: asyncio.Task | None = None
+    yield (
+        "",
+        card_html,
+        "Capturing system audio via BlackHole/default input",
+        card_state,
+        monitor_state,
+        await render_live_log(session_id),
+    )
+    try:
+        async for transcript, pause_detected, pause_seconds in live_audio.transcript_stream():
+            if card_task and card_task.done():
+                try:
+                    card_html, card_state = card_task.result()
+                except Exception as exc:
+                    monitor_state["last_extraction_message"] = f"Coaching card failed: {exc}"
+                    card_html = current_card_or_status(monitor_state)
+                    card_state = monitor_state.get("card_state") or {}
+                card_task = None
+
+            if pause_detected and (card_task is None or card_task.done()):
+                card_task = asyncio.create_task(
+                    monitor_answer_card(
+                        transcript,
+                        monitor_state,
+                        session_id=session_id,
+                        force=False,
+                        fast=True,
+                        pause_check=True,
+                        pause_seconds=pause_seconds,
+                    )
+                )
+
+            status_message = (
+                "Pause detected; coaching card loading in background"
+                if card_task and not card_task.done()
+                else "Capturing system audio via BlackHole/default input"
+            )
+            yield (
+                transcript,
+                card_html,
+                status_message,
+                card_state,
+                monitor_state,
+                await render_live_log(session_id),
+            )
+    finally:
+        if card_task and not card_task.done():
+            card_task.cancel()
+            await asyncio.gather(card_task, return_exceptions=True)
 
 
 async def stop_backend_live_transcript() -> str:
@@ -891,22 +1119,73 @@ async def transcribe_audio_input(audio_input: Any, use_space_stt: bool = False) 
 async def process_typed_transcript(
     session_id: int | None,
     transcript: str,
-) -> tuple[str, str, str, dict[str, Any]]:
-    exchanges = await extract_all_interview_exchanges_with_llm(transcript)
+) -> tuple[str, str, str, dict[str, Any], dict[str, Any]]:
+    exchanges = dedupe_extracted_exchanges(await extract_all_interview_exchanges_with_llm(transcript))
     if exchanges:
         cards = []
+        card_states = []
         last_state: dict[str, Any] = {}
         log = ""
         for exchange in exchanges:
+            existing_exchange = (
+                await find_existing_exchange(session_id, exchange["question"])
+                if session_id
+                else None
+            )
+            if existing_exchange:
+                answer = exchange.get("answer", "").strip()
+                existing_answer = str(existing_exchange.get("answer", "")).strip()
+                if answer and len(answer) > len(existing_answer):
+                    await update_exchange_answer(int(existing_exchange["id"]), answer)
+                log = await render_log(session_id)
+                display_answer = answer if answer and len(answer) > len(existing_answer) else existing_answer
+                last_state = {
+                    "session_id": session_id,
+                    "exchange_id": existing_exchange["id"],
+                    "question": existing_exchange["question"],
+                    "answer": display_answer,
+                    "framework": existing_exchange.get("framework_used", "General"),
+                    "skipped_duplicate": True,
+                }
+                classification = await classify_topic_and_steps(str(existing_exchange["question"]))
+                if not classification.get("model_unavailable"):
+                    framework_steps = classification["steps"]
+                    last_state.update(
+                        {
+                            "framework": classification["type"],
+                            "pattern": classification.get("pattern", classification["type"]),
+                            "steps": await generate_coaching_cues(
+                                str(existing_exchange["question"]),
+                                classification["type"],
+                                classification.get("pattern", classification["type"]),
+                                framework_steps,
+                            ),
+                            "framework_steps": framework_steps,
+                            "confidence": classification["confidence"],
+                        }
+                    )
+                    cards.append(render_card(last_state))
+                    card_states.append(last_state)
+                continue
+
             card, log, last_state = await coach_question(
                 session_id,
                 exchange["question"],
                 exchange.get("answer", ""),
             )
             cards.append(card)
+            card_states.append(last_state)
             session_id = last_state.get("session_id", session_id)
         last_state["processed_exchanges"] = exchanges
-        return transcript, render_cards(cards), log, last_state
+        card_html = render_cards(cards)
+        monitor_state = fresh_card_monitor_state()
+        monitor_state["cards"] = card_states[-4:]
+        monitor_state["card_html"] = card_html
+        monitor_state["card_state"] = last_state
+        if card_states:
+            monitor_state["last_question"] = str(card_states[-1].get("question", ""))
+            monitor_state["last_question_hash"] = question_hash_key(monitor_state["last_question"])
+        return transcript, card_html, log, last_state, monitor_state
 
     normalized = await normalize_interview_exchange_with_llm(transcript)
     if (
@@ -920,7 +1199,13 @@ async def process_typed_transcript(
             normalized.get("question", ""),
             normalized.get("answer", ""),
         )
-        return transcript, card, log, state
+        monitor_state = fresh_card_monitor_state()
+        monitor_state["cards"] = [state]
+        monitor_state["card_html"] = card
+        monitor_state["card_state"] = state
+        monitor_state["last_question"] = str(state.get("question", ""))
+        monitor_state["last_question_hash"] = question_hash_key(monitor_state["last_question"])
+        return transcript, card, log, state, monitor_state
 
     state = {
         "message": (
@@ -929,7 +1214,7 @@ async def process_typed_transcript(
             else general_llm_unavailable_message()
         )
     }
-    return transcript, render_answer_card(state), state["message"], state
+    return transcript, render_answer_card(state), state["message"], state, fresh_card_monitor_state()
 
 
 def clear_live_state() -> tuple[str, str, dict[str, Any], str, dict[str, Any]]:
@@ -956,34 +1241,45 @@ async def clear_database() -> tuple[None, dict[str, Any], dict[str, Any], str, s
 async def monitor_answer_card(
     transcript: str,
     monitor_state: dict[str, Any] | None,
+    session_id: int | None = None,
     force: bool = False,
     fast: bool = True,
+    pause_check: bool = False,
+    pause_seconds: float = 0.0,
 ) -> tuple[str, dict[str, Any]]:
     monitor_state = monitor_state or fresh_card_monitor_state()
-    if fast:
-        question = extract_fast_live_question_candidate(transcript, monitor_state, force=force)
-    else:
-        question = await extract_target_question_from_transcript(transcript, monitor_state, force=force)
+    if fast and not (force or pause_check):
+        monitor_state["last_extraction_message"] = "Listening for the interviewer to finish the question."
+        return current_card_or_status(monitor_state), monitor_state.get("card_state") or {}
+
+    question = await detect_live_question_from_transcript(
+        transcript,
+        monitor_state,
+        pause_seconds=pause_seconds,
+    )
     if not question:
         message = monitor_state.get("last_extraction_message", "")
-        card_html = monitor_state.get("card_html") or render_answer_card({"message": message})
+        card_html = current_card_or_status(monitor_state, message)
+        monitor_state["card_html"] = card_html
         return card_html, monitor_state.get("card_state") or {}
 
-    question_key = question_dedupe_key(question)
-    if is_duplicate_live_question(question_key, monitor_state):
-        return monitor_state.get("card_html") or render_answer_card(), monitor_state.get("card_state") or {}
-    if question_key == monitor_state.get("last_non_target_question_key"):
-        return monitor_state.get("card_html") or render_answer_card(), monitor_state.get("card_state") or {}
+    question_hash = question_hash_key(question)
+    if not has_new_live_question(question, monitor_state):
+        monitor_state["last_extraction_message"] = "Latest detected question is already shown."
+        existing_card_state = monitor_state.get("card_state") or {}
+        if session_id and existing_card_state and not existing_card_state.get("exchange_id"):
+            exchange_id = await persist_live_question(session_id, transcript, existing_card_state)
+            existing_card_state["session_id"] = session_id
+            existing_card_state["exchange_id"] = exchange_id
+            monitor_state["card_state"] = existing_card_state
+        return current_card_or_status(monitor_state), monitor_state.get("card_state") or {}
 
     result = await classify_topic_and_steps(question)
     if result.get("model_unavailable"):
         monitor_state["last_extraction_message"] = result["message"]
-        return monitor_state.get("card_html") or render_answer_card({"message": result["message"]}), {}
-    if fast and result.get("type") not in LIVE_TARGET_FRAMEWORKS:
-        monitor_state["last_non_target_question"] = question
-        monitor_state["last_non_target_question_key"] = question_key
-        monitor_state["last_extraction_message"] = "Listening for a DS/ML/AI/System Design question."
-        return monitor_state.get("card_html") or render_answer_card({"message": monitor_state["last_extraction_message"]}), {}
+        card_html = current_card_or_status(monitor_state, result["message"])
+        monitor_state["card_html"] = card_html
+        return card_html, {}
 
     cues = await generate_coaching_cues(
         question,
@@ -993,7 +1289,7 @@ async def monitor_answer_card(
     )
     card_state = {
         "question": question,
-        "question_key": question_key,
+        "question_hash": question_hash,
         "framework": result["type"],
         "pattern": result.get("pattern", result["type"]),
         "steps": cues,
@@ -1001,15 +1297,109 @@ async def monitor_answer_card(
         "confidence": result["confidence"],
         "needs_review": result["confidence"] < 0.6,
     }
-    cards = monitor_state.setdefault("cards", [])
-    if not any(questions_are_similar(question_key, str(card.get("question_key", ""))) for card in cards):
-        cards.append(card_state)
-    card_html = render_cards([render_card(card, flash=card.get("question") == question) for card in cards])
+    if session_id:
+        exchange_id = await persist_live_question(session_id, transcript, card_state)
+        card_state["session_id"] = session_id
+        card_state["exchange_id"] = exchange_id
+    cards = update_card_history(monitor_state, card_state)
+    card_html = render_cards(
+        [
+            render_card(card, flash=card.get("question_hash") == question_hash)
+            for card in cards
+        ]
+    )
     monitor_state["last_question"] = question
-    monitor_state["last_question_key"] = question_key
+    monitor_state["last_question_hash"] = question_hash
     monitor_state["card_html"] = card_html
     monitor_state["card_state"] = card_state
     return card_html, card_state
+
+
+async def persist_live_question(session_id: int, transcript: str, card_state: dict[str, Any]) -> int:
+    existing_exchange_id = await find_existing_exchange_id(session_id, card_state["question"])
+    if existing_exchange_id:
+        await backfill_empty_exchange_answers(session_id, transcript)
+        return existing_exchange_id
+
+    await add_transcript(
+        session_id=session_id,
+        raw_text=transcript,
+        labelled={"question": card_state["question"], "source": "live_detector"},
+    )
+    exchange_id = await add_exchange(
+        session_id=session_id,
+        question=card_state["question"],
+        answer="",
+        framework_used=card_state.get("framework", "General"),
+    )
+    await backfill_empty_exchange_answers(session_id, transcript)
+    return exchange_id
+
+
+async def backfill_empty_exchange_answers(session_id: int, transcript: str) -> None:
+    if not transcript.strip():
+        return
+    exchanges = await list_exchanges(session_id)
+    if not exchanges:
+        return
+
+    repair_input = [
+        {
+            "question": str(exchange.get("question", "")),
+            "answer": str(exchange.get("answer", "")),
+            "is_target": True,
+            "complete": True,
+            "exchange_id": exchange.get("id"),
+        }
+        for exchange in exchanges
+    ]
+    repaired = repair_missing_answers_from_transcript(repair_input, transcript)
+    for original, fixed in zip(exchanges, repaired):
+        if str(original.get("answer", "")).strip():
+            continue
+        answer = str(fixed.get("answer", "")).strip()
+        if answer:
+            await update_exchange_answer(int(original["id"]), answer)
+
+
+async def find_existing_exchange_id(session_id: int, question: str) -> int | None:
+    existing = await find_existing_exchange(session_id, question)
+    return int(existing["id"]) if existing else None
+
+
+async def find_existing_exchange(session_id: int, question: str) -> dict[str, Any] | None:
+    question_key = canonical_question_key(question)
+    exchanges = await list_exchanges(session_id)
+    for exchange in exchanges:
+        existing_key = canonical_question_key(str(exchange.get("question", "")))
+        if question_keys_are_similar(question_key, existing_key):
+            return exchange
+    return None
+
+
+async def render_live_log(session_id: int | None) -> str:
+    if not session_id:
+        return "Create a session to save live exchanges."
+    return await render_log(session_id)
+
+
+def current_card_or_status(state: dict[str, Any], message: str = "") -> str:
+    if state.get("card_state"):
+        return state.get("card_html") or render_card(state["card_state"])
+    return render_answer_card({"message": message or state.get("last_extraction_message", "")})
+
+
+def update_card_history(state: dict[str, Any], card_state: dict[str, Any], limit: int = 4) -> list[dict[str, Any]]:
+    question_hash = str(card_state.get("question_hash", ""))
+    cards = [
+        card
+        for card in state.get("cards", [])
+        if isinstance(card, dict) and str(card.get("question_hash", "")) != question_hash
+    ]
+    cards.insert(0, card_state)
+    cards = cards[:limit]
+    state["cards"] = cards
+    return cards
 
 
 async def update_live_card_from_transcript(
@@ -1020,11 +1410,24 @@ async def update_live_card_from_transcript(
 
 
 async def call_coaching_from_transcript(
+    session_id: int | None,
     transcript: str,
     monitor_state: dict[str, Any] | None,
-) -> tuple[str, dict[str, Any], dict[str, Any]]:
-    ensure_topic_model_warmup()
-    return await refresh_live_card_from_transcript(transcript, monitor_state, force=True)
+) -> tuple[str, dict[str, Any], dict[str, Any], str]:
+    ensure_model_warmup_background()
+    monitor_state = monitor_state or fresh_card_monitor_state()
+    if not transcript.strip():
+        monitor_state = fresh_card_monitor_state()
+        return render_answer_card(), {}, monitor_state, await render_live_log(session_id)
+
+    card_html, card_state = await monitor_answer_card(
+        transcript,
+        monitor_state,
+        session_id=session_id,
+        force=True,
+        fast=True,
+    )
+    return card_html, card_state, monitor_state, await render_live_log(session_id)
 
 
 async def refresh_live_card_from_transcript(
@@ -1033,6 +1436,8 @@ async def refresh_live_card_from_transcript(
     force: bool,
 ) -> tuple[str, dict[str, Any], dict[str, Any]]:
     monitor_state = monitor_state or fresh_card_monitor_state()
+    if not force and not monitor_state.get("cards") and not monitor_state.get("last_question"):
+        return gr.skip(), gr.skip(), monitor_state
     if not transcript.strip():
         monitor_state = fresh_card_monitor_state()
         return render_answer_card(), {}, monitor_state
@@ -1090,199 +1495,620 @@ async def generate_coaching_cues_with_llm(
 def fresh_card_monitor_state() -> dict[str, Any]:
     return {
         "last_question": "",
-        "last_question_key": "",
+        "last_question_hash": "",
         "card_html": render_answer_card(),
         "card_state": {},
         "cards": [],
-        "last_non_target_question": "",
-        "last_non_target_question_key": "",
-        "generic_last_llm_until": 0,
-        "generic_last_extracted_question": "",
-        "fast_last_checked_until": 0,
     }
 
 
-def extract_fast_live_question_candidate(
+async def detect_live_question_from_transcript(
     transcript: str,
     state: dict[str, Any],
-    force: bool = False,
+    pause_seconds: float = 0.0,
 ) -> str | None:
-    clean = normalize_llm_text(transcript)
-    if len(clean.split()) < 5:
-        state["last_extraction_message"] = "Listening for a complete DS/ML/AI/System Design question."
-        return None
-
-    last_checked_until = int(state.get("fast_last_checked_until") or 0)
-    if not force and len(clean) - last_checked_until < LIVE_FAST_MIN_DELTA_CHARS:
-        return None
-
-    state["fast_last_checked_until"] = len(clean)
-    candidate = clean_fast_live_question(clean[-LIVE_FAST_QUESTION_WINDOW_CHARS:])
-    if len(candidate.split()) < 5:
-        state["last_extraction_message"] = "Listening for a complete DS/ML/AI/System Design question."
-        return None
-    if not force and not live_question_looks_complete(candidate):
-        state["last_extraction_message"] = "Listening for the interviewer to finish the question."
-        return None
-
-    state["last_extraction_message"] = ""
-    return candidate
-
-
-def clean_fast_live_question(window: str) -> str:
-    candidate = f" {normalize_llm_text(window)} "
-    lowered = candidate.lower()
-
-    marker_positions = [lowered.rfind(marker) for marker in LIVE_QUESTION_MARKERS]
-    marker_positions = [position for position in marker_positions if position >= 0]
-    if marker_positions:
-        candidate = candidate[max(marker_positions) :].strip()
-
-    lowered = f" {candidate.lower()} "
-    answer_positions = [lowered.find(marker) for marker in LIVE_ANSWER_STARTS]
-    answer_positions = [position for position in answer_positions if position > 6]
-    if answer_positions:
-        candidate = candidate[: min(answer_positions)].strip()
-
-    candidate = re.sub(
-        r"^(?:first|second|third|next|another)(?:\s+(?:question|one))?\s*[:,.-]?\s*",
-        "",
-        candidate,
-        flags=re.IGNORECASE,
+    previous_question = str(state.get("last_question") or "").strip()
+    question = await detect_live_question_from_excerpt(
+        recent_transcript_excerpt(transcript),
+        state,
+        previous_question,
+        pause_seconds,
+        "transcript tail",
     )
-    candidate = re.sub(r"^(you have)\.\s+\1\b", r"\1", candidate, flags=re.IGNORECASE)
+    if question or not previous_question:
+        return question
 
-    question_mark = candidate.rfind("?")
-    if question_mark >= 0:
-        candidate = candidate[: question_mark + 1]
+    after_previous = transcript_after_question(transcript, previous_question)
+    if after_previous.strip() == transcript.strip():
+        return await detect_latest_question_from_list(
+            recent_transcript_excerpt(transcript),
+            state,
+            previous_question,
+        )
 
-    candidate = remove_fast_transcript_repeats(candidate)
-    candidate = candidate.strip(" .,-:")
-    if candidate and not candidate.endswith("?"):
-        candidate = f"{candidate}?"
-    return candidate
+    question = await detect_live_question_from_excerpt(
+        recent_transcript_excerpt(after_previous),
+        state,
+        previous_question,
+        pause_seconds,
+        "after previous question",
+    )
+    if question:
+        return question
 
-
-def remove_fast_transcript_repeats(text: str) -> str:
-    words = text.split()
-    cleaned: list[str] = []
-    for word in words:
-        normalized = word.lower().strip(".,?!:;")
-        if cleaned and normalized == cleaned[-1].lower().strip(".,?!:;"):
-            continue
-        cleaned.append(word)
-    return " ".join(cleaned)
-
-
-def live_question_looks_complete(question: str) -> bool:
-    clean = normalize_llm_text(question).rstrip("?")
-    lowered = clean.lower()
-    if len(clean.split()) >= 22 and any(re.search(pattern, lowered) for pattern in LIVE_COMPLETION_PATTERNS):
-        return True
-    if len(clean.split()) >= 12 and lowered.endswith(("?", " right", " correct", " adequate", " enough")):
-        return True
-    return False
-
-
-def question_dedupe_key(question: str) -> str:
-    words = re.findall(r"[a-z0-9]+", question.lower())
-    stop_words = {
-        "a",
-        "an",
-        "and",
-        "are",
-        "as",
-        "be",
-        "briefly",
-        "can",
-        "could",
-        "do",
-        "does",
-        "explain",
-        "for",
-        "how",
-        "i",
-        "in",
-        "is",
-        "it",
-        "me",
-        "of",
-        "please",
-        "question",
-        "tell",
-        "the",
-        "to",
-        "we",
-        "what",
-        "would",
-        "you",
-        "your",
-    }
-    useful = [word for word in words if word not in stop_words and len(word) > 1]
-    return " ".join(useful[:40])
-
-
-def is_duplicate_live_question(question_key: str, state: dict[str, Any]) -> bool:
-    if not question_key:
-        return False
-    if questions_are_similar(question_key, str(state.get("last_question_key", ""))):
-        return True
-    return any(
-        questions_are_similar(question_key, str(card.get("question_key", "")))
-        for card in state.get("cards", [])
-        if isinstance(card, dict)
+    return await detect_latest_question_from_list(
+        recent_transcript_excerpt(after_previous),
+        state,
+        previous_question,
     )
 
 
-def questions_are_similar(left_key: str, right_key: str) -> bool:
-    left = set(left_key.split())
-    right = set(right_key.split())
-    if not left or not right:
-        return False
-    overlap = len(left & right)
-    containment = overlap / min(len(left), len(right))
-    union = len(left | right)
-    jaccard = overlap / union if union else 0.0
-    return containment >= LIVE_FAST_DUPLICATE_SIMILARITY or jaccard >= LIVE_FAST_DUPLICATE_SIMILARITY
-
-
-async def extract_target_question_from_transcript(
-    transcript: str,
+async def detect_live_question_from_excerpt(
+    excerpt: str,
     state: dict[str, Any],
-    force: bool = False,
+    previous_question: str,
+    pause_seconds: float,
+    source_label: str,
 ) -> str | None:
-    clean = re.sub(r"\s+", " ", transcript).strip()
-    if len(clean.split()) < 4:
+    if len(excerpt.split()) < 4:
+        state["last_extraction_message"] = f"Not enough transcript after {source_label} to detect a new question."
         return None
 
-    last_llm_until = int(state.get("generic_last_llm_until") or 0)
-    if (
-        not force
-        and len(clean) - last_llm_until < GENERIC_EXTRACTION_MIN_LLM_DELTA_CHARS
-        and "?" not in clean[last_llm_until:]
-    ):
+    prompt = QUESTION_DETECTOR_USER_PROMPT.format(
+        transcript=excerpt,
+        pause_seconds=pause_seconds,
+        previous_question=previous_question or "None",
+    )
+    try:
+        response = await asyncio.wait_for(
+            general_llm.generate(
+                QUESTION_DETECTOR_SYSTEM_PROMPT,
+                prompt,
+                max_new_tokens=256,
+            ),
+            timeout=LIVE_CARD_LLM_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        state["last_extraction_message"] = live_detector_timeout_message("Question detector")
         return None
 
-    window = clean[-GENERIC_EXTRACTION_MAX_WINDOW_CHARS:]
-    state["generic_last_llm_until"] = len(clean)
-    result = await normalize_interview_exchange_with_llm(window, prefer_latest=True)
-    if not result:
+    if not response:
         details = f" Details: {general_llm.last_error}" if general_llm.last_error else ""
         state["last_extraction_message"] = (
             f"General LLM unavailable. Expected Hugging Face model {GENERAL_LLM_MODEL}.{details}"
         )
         return None
-    if not result.get("is_target") or not result.get("complete"):
-        state["last_extraction_message"] = "Listening for a complete DS/ML/AI/System Design question."
+
+    try:
+        result = json.loads(extract_json_object(response))
+    except Exception as exc:
+        preview = response.replace("\n", " ")[:300]
+        general_llm.last_error = f"Question detector returned non-JSON output: {exc}. Output preview: {preview}"
+        state["last_extraction_message"] = "Question detector returned invalid JSON."
         return None
 
-    question = str(result.get("question", "")).strip()
-    if not question or question == state.get("generic_last_extracted_question"):
+    if not bool(result.get("question_detected")):
+        if pause_seconds >= LIVE_QUESTION_PAUSE_SECONDS:
+            state["last_extraction_message"] = (
+                f"{pause_seconds:.1f}s pause reached, but no complete interviewer question was found in the transcript window."
+            )
+        else:
+            state["last_extraction_message"] = "Listening for the interviewer to finish a question."
         return None
 
-    state["generic_last_extracted_question"] = question
+    return validate_detected_question(result, excerpt, state, source_label)
+
+
+async def detect_latest_question_from_list(
+    excerpt: str,
+    state: dict[str, Any],
+    previous_question: str,
+) -> str | None:
+    if len(excerpt.split()) < 4:
+        return None
+
+    prompt = QUESTION_LIST_DETECTOR_USER_PROMPT.format(
+        transcript=excerpt,
+        previous_question=previous_question or "None",
+    )
+    try:
+        response = await asyncio.wait_for(
+            general_llm.generate(
+                QUESTION_LIST_DETECTOR_SYSTEM_PROMPT,
+                prompt,
+                max_new_tokens=700,
+            ),
+            timeout=LIVE_CARD_LLM_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        state["last_extraction_message"] = live_detector_timeout_message("Question list detector")
+        return None
+
+    if not response:
+        return None
+
+    try:
+        result = json.loads(extract_json_object(response))
+    except Exception as exc:
+        preview = response.replace("\n", " ")[:300]
+        general_llm.last_error = f"Question list detector returned non-JSON output: {exc}. Output preview: {preview}"
+        state["last_extraction_message"] = "Question list detector returned invalid JSON."
+        return None
+
+    questions = result.get("questions", [])
+    if not isinstance(questions, list):
+        return None
+
+    for item in reversed(questions):
+        if not isinstance(item, dict):
+            continue
+        question = validate_detected_question(item, excerpt, state, "question list fallback")
+        if question:
+            return question
+
+    state["last_extraction_message"] = "Question list fallback found no new valid interviewer question."
+    return None
+
+
+def validate_detected_question(
+    result: dict[str, Any],
+    excerpt: str,
+    state: dict[str, Any],
+    source_label: str,
+) -> str | None:
+    speaker = str(result.get("speaker", "unknown")).strip().lower()
+    confidence = str(result.get("confidence", "low")).strip().lower()
+    if speaker == "candidate":
+        state["last_extraction_message"] = f"Detector attributed latest text to {speaker or 'unknown'}, so no card was created."
+        return None
+    if confidence == "low":
+        state["last_extraction_message"] = "Question detector confidence was low, so no card was created."
+        return None
+    if result.get("is_target") is False:
+        state["last_extraction_message"] = "Detected question is outside DS/ML/AI/MLOps/System Design scope."
+        return None
+
+    question_value = result.get("question")
+    question = normalize_llm_text(str(question_value)) if question_value is not None else ""
+    question = trim_answer_leak_from_question(question)
+    if not question:
+        state["last_extraction_message"] = "Question detector did not return a question."
+        return None
+    if looks_like_candidate_answer_fragment(question):
+        state["last_extraction_message"] = "Detector returned candidate answer text, so no coaching card was created."
+        return None
+    if not looks_like_interviewer_prompt(question):
+        state["last_extraction_message"] = "Detector returned an answer fragment, so no coaching card was created."
+        return None
+    if question_looks_incomplete(question):
+        state["last_extraction_message"] = "Detector returned an incomplete question fragment, so no card was created."
+        return None
+    if not question_is_grounded_in_transcript(question, excerpt):
+        state["last_extraction_message"] = f"Detector returned a question that was not grounded in {source_label}."
+        return None
+    if not is_target_coaching_question(question, result):
+        state["last_extraction_message"] = "Detected question is not a target technical interview question."
+        return None
+
+    question_hash = question_hash_key(question)
+    if not has_new_live_question(question, state):
+        state["last_extraction_message"] = f"No newer interviewer question detected in {source_label}."
+        return None
+
     state["last_extraction_message"] = ""
     return question
+
+
+def looks_like_candidate_answer_fragment(question: str) -> bool:
+    clean = normalize_llm_text(question).lower().rstrip("?!. ")
+    answer_starts = (
+        "in supervised learning",
+        "in unsupervised learning",
+        "supervised learning",
+        "unsupervised learning",
+        "the model ",
+        "a model ",
+        "the key difference",
+        "the main difference",
+        "the main reason",
+        "this means",
+        "it means",
+        "for example",
+        "like ",
+        "i would ",
+        "i will ",
+        "i have ",
+        "i used ",
+        "yes ",
+        "no ",
+    )
+    return clean.startswith(answer_starts)
+
+
+def trim_answer_leak_from_question(question: str) -> str:
+    clean = normalize_llm_text(question)
+    if not clean:
+        return ""
+
+    trailing_answer_tokens = (" yes", " yeah", " yep", " no", " nope", " sure", " okay", " ok")
+    lowered = clean.lower().rstrip("?.!, ")
+    for token in trailing_answer_tokens:
+        if lowered.endswith(token):
+            clean = clean[: -len(token)].rstrip(" ?.!,")
+            break
+
+    answer_starts = (
+        " yes i ",
+        " yes, i ",
+        " yeah i ",
+        " sure i ",
+        " no i ",
+        " i have ",
+        " i've ",
+        " i used ",
+        " i would ",
+        " i will ",
+        " we used ",
+        " we have ",
+    )
+    lowered = f" {clean.lower()} "
+    cut_at = -1
+    for marker in answer_starts:
+        index = lowered.find(marker)
+        if index > 0:
+            cut_at = index
+            break
+    if cut_at > 0 and len(clean[:cut_at].split()) >= 5:
+        clean = clean[:cut_at].rstrip(" ?.!,")
+
+    if clean and not clean.endswith("?"):
+        clean = f"{clean.rstrip('.')}?"
+    return normalize_llm_text(clean)
+
+
+def is_target_coaching_question(question: str, result: dict[str, Any] | None = None) -> bool:
+    result = result or {}
+    domain = str(result.get("domain", "")).strip().lower()
+    target_domains = {
+        "data_science",
+        "machine_learning",
+        "ai_engineering",
+        "mlops",
+        "statistics",
+        "analytics",
+        "coding",
+        "algorithms",
+        "system_design",
+    }
+    if domain in target_domains:
+        return True
+    if domain == "other" or result.get("is_target") is False:
+        return False
+
+    text = normalize_llm_text(question).lower()
+    domain_terms = (
+        "accuracy",
+        "algorithm",
+        "analytics",
+        "api",
+        "classification",
+        "clustering",
+        "coding",
+        "data",
+        "database",
+        "deployment",
+        "drift",
+        "embedding",
+        "evaluation",
+        "feature",
+        "fraud",
+        "inference",
+        "latency",
+        "learning",
+        "llm",
+        "machine",
+        "metric",
+        "ml",
+        "model",
+        "pipeline",
+        "precision",
+        "production",
+        "recall",
+        "recommendation",
+        "recommender",
+        "regression",
+        "scaling",
+        "scalable",
+        "statistics",
+        "supervised",
+        "system",
+        "system design",
+        "training",
+        "unsupervised",
+        "xgboost",
+    )
+    non_domain_terms = (
+        "this app",
+        "this tool",
+        "how does it work here",
+        "what does it mean",
+        "extract relevant questions",
+        "extract the required relevant questions",
+        "coaching card",
+        "session log",
+        "transcript",
+    )
+    return any(term in text for term in domain_terms) and not any(term in text for term in non_domain_terms)
+
+
+def recent_transcript_excerpt(
+    transcript: str,
+    max_lines: int = LIVE_QUESTION_CONTEXT_LINES,
+    max_chars: int = LIVE_QUESTION_CONTEXT_CHARS,
+) -> str:
+    lines = [line.strip() for line in transcript.splitlines() if line.strip()]
+    excerpt = "\n".join(lines[-max_lines:]) if lines else transcript.strip()
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[-max_chars:]
+    return excerpt.strip()
+
+
+def transcript_after_question(transcript: str, question: str) -> str:
+    if not question:
+        return transcript
+    transcript_lower = transcript.lower()
+    question_lower = question.lower().rstrip(" ?.")
+    position = transcript_lower.rfind(question_lower)
+    if position >= 0:
+        return transcript[position + len(question_lower) :].strip(" ?.:-,;") or transcript
+
+    match_end = ordered_question_match_end(transcript, question)
+    if match_end > 0:
+        return transcript[match_end:].strip(" ?.:-,;") or transcript
+    return transcript
+
+
+def ordered_question_match_span(transcript: str, question: str, start_at: int = 0) -> tuple[int, int]:
+    transcript_tokens = [
+        (match.group(0).lower(), match.start(), match.end())
+        for match in re.finditer(r"[a-z0-9]+", transcript.lower())
+        if match.end() >= start_at
+    ]
+    question_tokens = [
+        token
+        for token in re.findall(r"[a-z0-9]+", question.lower())
+        if token not in {"is", "the", "a", "an", "and", "or"}
+    ]
+    if len(question_tokens) < 3:
+        return -1, -1
+
+    best_partial: tuple[int, int, int] | None = None
+    minimum_match = max(3, int(len(question_tokens) * 0.8))
+    for start_index, (token, start, end) in enumerate(transcript_tokens):
+        if token != question_tokens[0]:
+            continue
+        question_index = 1
+        matched = 1
+        match_end = end
+        for next_token, _, next_end in transcript_tokens[start_index + 1 :]:
+            if question_index >= len(question_tokens):
+                break
+            if next_token == question_tokens[question_index]:
+                matched += 1
+                question_index += 1
+                match_end = next_end
+        if matched == len(question_tokens):
+            return start, match_end
+        if matched >= minimum_match and (
+            best_partial is None or matched > best_partial[0]
+        ):
+            best_partial = (matched, start, match_end)
+
+    if best_partial:
+        return best_partial[1], best_partial[2]
+    return -1, -1
+
+
+def ordered_question_match_end(transcript: str, question: str) -> int:
+    transcript_tokens = [
+        (match.group(0).lower(), match.start(), match.end())
+        for match in re.finditer(r"[a-z0-9]+", transcript.lower())
+    ]
+    question_tokens = [
+        token
+        for token in re.findall(r"[a-z0-9]+", question.lower())
+        if token not in {"is", "the", "a", "an", "and", "or"}
+    ]
+    if len(question_tokens) < 3:
+        return -1
+
+    needed = len(question_tokens) if len(question_tokens) <= 6 else 6
+    for start_index, (token, start, _) in enumerate(transcript_tokens):
+        if token != question_tokens[0]:
+            continue
+        question_index = 1
+        matched = 1
+        end = start
+        for next_token, _, next_end in transcript_tokens[start_index + 1 :]:
+            if question_index >= len(question_tokens):
+                break
+            if next_token == question_tokens[question_index]:
+                matched += 1
+                question_index += 1
+                end = next_end
+                if matched >= needed:
+                    return end
+        if matched >= needed:
+            return end
+    return -1
+
+
+def question_hash_key(question: str) -> str:
+    return hashlib.md5(canonical_question_key(question).encode("utf-8")).hexdigest()
+
+
+def canonical_question_key(question: str) -> str:
+    text = normalize_llm_text(question).lower()
+    replacements = {
+        "what's": "what is",
+        "whats": "what is",
+        "you're": "you are",
+        "you've": "you have",
+        "can't": "cannot",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    words = re.findall(r"[a-z0-9]+", text)
+    stop_words = {"a", "an", "the", "please", "quick", "one", "question"}
+    words = [word for word in words if word not in stop_words]
+    return " ".join(remove_adjacent_duplicates(words))
+
+
+def remove_adjacent_duplicates(words: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    for word in words:
+        if cleaned and cleaned[-1] == word:
+            continue
+        cleaned.append(word)
+    return cleaned
+
+
+def question_looks_incomplete(question: str) -> bool:
+    words = re.findall(r"[a-z0-9]+", question.lower())
+    if len(words) < 5:
+        return True
+    return words[-1] in {"and", "or", "between", "with", "of", "to", "for", "in", "on", "the", "a", "an"}
+
+
+def looks_like_interviewer_prompt(text: str) -> bool:
+    clean = normalize_llm_text(text).lower()
+    promptish = re.sub(r"[,:;]", "", clean)
+    prompt_starts = (
+        "what ",
+        "what's ",
+        "why ",
+        "how ",
+        "when ",
+        "where ",
+        "which ",
+        "who ",
+        "have you ",
+        "have i ",
+        "do you ",
+        "did you ",
+        "are you ",
+        "can you ",
+        "could you ",
+        "would you ",
+        "should you ",
+        "explain ",
+        "describe ",
+        "tell me ",
+        "walk me through ",
+        "compare ",
+        "design ",
+        "solve ",
+        "evaluate ",
+        "reason about ",
+        "discuss ",
+        "show me ",
+        "give me ",
+        "build ",
+        "implement ",
+    )
+    if promptish.startswith(prompt_starts):
+        return True
+
+    setup_starts = (
+        "your model ",
+        "you have ",
+        "given ",
+        "suppose ",
+        "imagine ",
+        "let's say ",
+        "lets say ",
+        "in production ",
+        "in a production ",
+        "for a ",
+    )
+    question_clauses = (
+        " what ",
+        " how ",
+        " why ",
+        " which ",
+        " when ",
+        " where ",
+        " who ",
+        " is this ",
+        " is that ",
+        " is it ",
+        " are they ",
+        " do you ",
+        " does it ",
+        " can you ",
+        " could you ",
+        " would you ",
+        " should you ",
+        " have you ",
+    )
+    return promptish.startswith(setup_starts) and any(clause in f" {promptish}" for clause in question_clauses)
+
+
+def question_is_grounded_in_transcript(question: str, transcript: str) -> bool:
+    question_tokens = content_tokens(question)
+    transcript_tokens = content_tokens(transcript)
+    if len(question_tokens) < 2:
+        return False
+
+    transcript_text = " ".join(transcript_tokens)
+    opening = " ".join(question_tokens[:2])
+    if opening and opening in transcript_text:
+        return True
+
+    if question_tokens[0] not in transcript_tokens:
+        return False
+
+    overlap = len(set(question_tokens) & set(transcript_tokens))
+    return overlap / max(len(set(question_tokens)), 1) >= 0.65
+
+
+def content_tokens(text: str) -> list[str]:
+    stop_words = {"a", "an", "the", "is", "are", "was", "were", "to", "of", "in", "on", "for", "and", "or"}
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", text.lower())
+        if token not in stop_words
+    ]
+
+
+def has_new_live_question(question: str, state: dict[str, Any]) -> bool:
+    question_key = canonical_question_key(question)
+    if not question_key:
+        return False
+    if question_keys_are_similar(question_key, canonical_question_key(str(state.get("last_question", "")))):
+        return False
+    return not any(
+        question_keys_are_similar(question_key, canonical_question_key(str(card.get("question", ""))))
+        for card in state.get("cards", [])
+        if isinstance(card, dict)
+    )
+
+
+def question_keys_are_similar(left_key: str, right_key: str) -> bool:
+    if not left_key or not right_key:
+        return False
+    if left_key == right_key:
+        return True
+    left_words = left_key.split()
+    right_words = right_key.split()
+    if len(left_words) < 5 or len(right_words) < 5:
+        return False
+    left = set(left_words)
+    right = set(right_words)
+    overlap = len(left & right)
+    containment = overlap / max(min(len(left), len(right)), 1)
+    jaccard = overlap / max(len(left | right), 1)
+    return containment >= 0.86 or jaccard >= 0.78
 
 
 def extract_json_object(text: str) -> str:
@@ -1330,6 +2156,7 @@ def fresh_stream_state() -> dict[str, Any]:
         "rejected": 0,
         "last_rms": 0.0,
         "last_window_seconds": 0.0,
+        "quiet_seconds": 0.0,
         "last_text": "",
     }
 
@@ -1674,6 +2501,13 @@ with gr.Blocks(elem_id="app-shell") as demo:
         role = gr.Textbox(label="Role", placeholder="ML Engineer", scale=2)
         start = gr.Button("Create Session", variant="primary", scale=1)
     status = gr.Textbox(label="Session Status", interactive=False, elem_id="status_box")
+    model_status_box = gr.Textbox(
+        label="Startup Status",
+        value=render_startup_status(),
+        interactive=False,
+        lines=1,
+        elem_id="model_status_box",
+    )
 
     with gr.Tabs():
         with gr.Tab("Live"):
@@ -1740,6 +2574,11 @@ with gr.Blocks(elem_id="app-shell") as demo:
             report = gr.Textbox(label="Evaluation Report", lines=16, interactive=False, elem_id="report_box")
 
     start.click(start_session, inputs=[company, role], outputs=[session_id, status])
+    demo.load(
+        warmup_all_models,
+        outputs=[model_status_box],
+        queue=True,
+    )
     transcribe_coach.click(
         transcribe_and_coach,
         inputs=[session_id, mic, live_transcript],
@@ -1748,8 +2587,8 @@ with gr.Blocks(elem_id="app-shell") as demo:
     )
     mic.stream(
         stream_live_transcript,
-        inputs=[mic, live_transcript, stream_state],
-        outputs=[live_transcript, answer_card, stream_status, stream_state, last_state],
+        inputs=[session_id, mic, live_transcript, stream_state],
+        outputs=[live_transcript, answer_card, stream_status, stream_state, last_state, log],
         queue=True,
     )
     mic.stop_recording(
@@ -1761,7 +2600,8 @@ with gr.Blocks(elem_id="app-shell") as demo:
     if not HF_SPACE_MODE:
         start_live.click(
             start_backend_live_transcript,
-            outputs=[live_transcript, answer_card, stream_status, last_state, card_monitor_state],
+            inputs=[session_id],
+            outputs=[live_transcript, answer_card, stream_status, last_state, card_monitor_state, log],
             queue=True,
         )
         stop_live.click(
@@ -1772,13 +2612,13 @@ with gr.Blocks(elem_id="app-shell") as demo:
     coach.click(
         process_typed_transcript,
         inputs=[session_id, live_transcript],
-        outputs=[live_transcript, answer_card, log, last_state],
+        outputs=[live_transcript, answer_card, log, last_state, card_monitor_state],
         queue=True,
     )
     call_coaching.click(
         call_coaching_from_transcript,
-        inputs=[live_transcript, card_monitor_state],
-        outputs=[answer_card, last_state, card_monitor_state],
+        inputs=[session_id, live_transcript, card_monitor_state],
+        outputs=[answer_card, last_state, card_monitor_state, log],
         queue=True,
     )
     live_transcript.change(
