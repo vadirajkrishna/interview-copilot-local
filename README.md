@@ -27,6 +27,8 @@ tags:
 
 # Interview Coach
 
+Created by [@vadirajkrishna](https://huggingface.co/vadirajkrishna).
+
 Interview Coach is a local-first assistant for live technical interviews. It listens to noisy interview audio, extracts the actual Data Science, ML, AI, or System Design question, and shows a compact coaching card with important pointers while the candidate is answering.
 
 Development note: the live transcription flow, coaching-card timing, and transcript extraction loop were iterated with Codex assistance.
