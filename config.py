@@ -14,7 +14,11 @@ STT_BACKEND = os.environ.get("INTERVIEW_COACH_STT_BACKEND", "transformers" if HF
 HF_WHISPER_MODEL = os.environ.get("INTERVIEW_COACH_HF_WHISPER_MODEL", "openai/whisper-tiny")
 APP_HOST = os.environ.get("INTERVIEW_COACH_HOST", "0.0.0.0" if HF_SPACE_MODE else "127.0.0.1")
 APP_PORT = 7860
+<<<<<<< HEAD
 TOPIC_PATTERN_MODEL = os.environ.get("INTERVIEW_COACH_TOPIC_PATTERN_MODEL", "build-small-hackathon/interview-coach-3b")
+=======
+TOPIC_PATTERN_MODEL = os.environ.get("INTERVIEW_COACH_TOPIC_PATTERN_MODEL", "vadirajkrishna/interview-coach-3b")
+>>>>>>> c0f39ad (initial commit - InterviewCopilotLocal)
 TOPIC_PATTERN_BASE_MODEL = os.environ.get("INTERVIEW_COACH_TOPIC_PATTERN_BASE_MODEL", GENERAL_LLM_MODEL)
 USE_TOPIC_PATTERN_MODEL = os.environ.get("INTERVIEW_COACH_USE_TOPIC_PATTERN_MODEL", "1").strip().lower() not in {
     "0",

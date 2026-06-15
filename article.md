@@ -39,7 +39,11 @@ The project uses a multi-model approach. Instead of forcing one model to handle 
 | --- | ---: | --- |
 | `mlx-community/whisper-tiny` | ~39M parameters | Fast streaming transcription for live audio |
 | `mlx-community/whisper-small-mlx` | ~244M parameters | Higher-quality local transcription when needed |
+<<<<<<< HEAD
 | `build-small-hackathon/interview-coach-3b` | 3B base model plus LoRA adapter | Fine-tuned topic and pattern detection |
+=======
+| `vadirajkrishna/interview-coach-3b` | 3B base model plus LoRA adapter | Fine-tuned topic and pattern detection |
+>>>>>>> c0f39ad (initial commit - InterviewCopilotLocal)
 | `Qwen/Qwen2.5-3B-Instruct` | ~3B parameters | General reasoning, coaching hint generation, transcript cleanup, and evaluation |
 | SQLite | Local database | Session, exchange, and evaluation storage |
 
