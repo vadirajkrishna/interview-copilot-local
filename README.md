@@ -19,6 +19,10 @@ tags:
   - speech-to-text
   - langgraph
   - local-ai
+  - track:backyard
+  - sponsor:openai
+  - achievement:offgrid
+  - achievement:fieldnotes
 ---
 
 # Interview Coach
