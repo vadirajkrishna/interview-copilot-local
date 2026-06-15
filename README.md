@@ -34,6 +34,7 @@ Development note: the live transcription flow, coaching-card timing, and transcr
 ## Links
 
 - Hugging Face Space README: https://huggingface.co/spaces/build-small-hackathon/interview-copilot-local/blob/main/README.md
+- Published article: https://huggingface.co/blog/build-small-hackathon/local-interview-copilot
 - Demo video: https://www.loom.com/share/d44244e43927423b9be237fbb207a65b
 
 ## Why It Matters
