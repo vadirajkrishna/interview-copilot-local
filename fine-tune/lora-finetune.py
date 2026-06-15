@@ -41,11 +41,7 @@ import modal
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 # Your Hugging Face username (https://huggingface.co/settings/profile)
-<<<<<<< HEAD
 HF_USERNAME = "build-small-hackathon"
-=======
-HF_USERNAME = "vadirajkrishna"
->>>>>>> c0f39ad (initial commit - InterviewCopilotLocal)
 
 # Name for the fine-tuned model repo on Hugging Face
 HF_MODEL_NAME = "interview-coach-3b"
